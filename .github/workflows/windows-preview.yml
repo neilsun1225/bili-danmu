@@ -1,0 +1,46 @@
+name: Windows 发送框试用验证
+
+on:
+  push:
+    branches: [feature/hide-sender]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.repository == 'neilsun1225/bili-danmu'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.31.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+      - name: 前端检查
+        run: |
+          pnpm lint
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pnpm build
+      - name: Rust 单元测试
+        working-directory: src-tauri
+        run: cargo test --lib --locked
+      - name: 构建独立试用程序
+        run: pnpm tauri build --no-bundle --config src-tauri/tauri.preview.conf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bili-danmu-hide-sender-windows-x64
+          path: src-tauri/target/release/bili-danmu.exe
+          if-no-files-found: error
+          retention-days: 14
