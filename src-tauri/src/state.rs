@@ -70,6 +70,8 @@ pub(crate) struct OverlayState {
     /// 而前端启动时就会读一次——查窗口 API 会读到「未创建」的 false 并且此后再不重读，
     /// 故可见性与穿透、置顶一样以内存态为准；初值与创建窗口时的默认可见一致
     pub(crate) visible: Mutex<bool>,
+    /// 发送框独立显示偏好（持久化，隐藏后仍可从主窗口设置恢复）
+    pub(crate) sender_visible: Mutex<bool>,
     pub(crate) clickthrough: Mutex<bool>,
     /// 始终置顶（窗口 API 无 getter，需内存态供仪表盘读取；初值与创建窗口时一致）
     pub(crate) always_on_top: Mutex<bool>,
@@ -90,6 +92,7 @@ impl Default for OverlayState {
     fn default() -> Self {
         Self {
             visible: Mutex::new(true),
+            sender_visible: Mutex::new(true),
             clickthrough: Mutex::new(false),
             always_on_top: Mutex::new(true),
             style: Mutex::new(config::OverlayStyle::default()),

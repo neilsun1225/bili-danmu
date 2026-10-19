@@ -142,6 +142,14 @@ pub fn save_overlay_style(app: &AppHandle, style: &OverlayStyle) -> Result<(), S
     save_config_unlocked(app, &cfg)
 }
 
+/// 保存发送框独立显示偏好
+pub fn save_sender_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.sender.visible = visible;
+    save_config_unlocked(app, &cfg)
+}
+
 /// 保存 Overlay 窗口位置大小
 pub fn save_overlay_bounds(app: &AppHandle, bounds: &WindowBounds) -> Result<(), String> {
     let _g = lock_cfg();

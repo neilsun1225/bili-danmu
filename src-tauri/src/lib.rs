@@ -91,6 +91,7 @@ pub fn run() {
             {
                 let ov = app.state::<OverlayState>();
                 *ov.style.lock().unwrap() = cfg.overlay_style.clone();
+                *ov.sender_visible.lock().unwrap() = cfg.sender.visible;
                 *ov.filter.lock().unwrap() = cfg.danmaku_filter.clone();
                 *ov.gift.lock().unwrap() = cfg.gift.clone();
                 *ov.welcome.lock().unwrap() = cfg.welcome.clone();
@@ -163,6 +164,7 @@ pub fn run() {
                 WebviewUrl::App("sender.html".into()),
             )
             .title("bili-danmu 发送")
+            .visible(cfg.sender.visible)
             .inner_size(320.0, 80.0)
             .decorations(false)
             .transparent(true)
@@ -262,6 +264,8 @@ pub fn run() {
             commands::overlay_set_clickthrough,
             commands::overlay_get_clickthrough,
             commands::overlay_is_visible,
+            commands::sender_is_visible,
+            commands::sender_set_visible,
             commands::overlay_set_always_on_top,
             commands::get_dashboard_status,
             commands::overlay_get_style,

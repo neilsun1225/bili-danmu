@@ -7,7 +7,7 @@ use crate::bilibili;
 use crate::config;
 use crate::state::{prune_ticks, AppState, OverlayState, RoomStatus};
 use crate::tts;
-use crate::window::{overlay_window, sync_sender_docked};
+use crate::window::{overlay_window, sender_window, sync_sender_docked};
 use serde_json::json;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -64,6 +64,32 @@ pub(crate) fn overlay_get_clickthrough(state: State<'_, OverlayState>) -> bool {
 #[tauri::command]
 pub(crate) fn overlay_is_visible(state: State<'_, OverlayState>) -> bool {
     *state.visible.lock().unwrap()
+}
+
+/// 查询发送框显示偏好（独立于弹幕窗与鼠标穿透）
+#[tauri::command]
+pub(crate) fn sender_is_visible(state: State<'_, OverlayState>) -> bool {
+    *state.sender_visible.lock().unwrap()
+}
+
+/// 显示 / 隐藏整个发送框窗口，并记住偏好
+#[tauri::command]
+pub(crate) fn sender_set_visible(
+    app: AppHandle,
+    state: State<'_, OverlayState>,
+    visible: bool,
+) -> Result<bool, String> {
+    let win = sender_window(&app).ok_or("发送框窗口未创建")?;
+    if visible {
+        sync_sender_docked(&app);
+        win.show().map_err(|e| format!("显示发送框失败: {e}"))?;
+    } else {
+        win.hide().map_err(|e| format!("隐藏发送框失败: {e}"))?;
+    }
+    *state.sender_visible.lock().unwrap() = visible;
+    let _ = app.emit("sender-visible", visible);
+    config::save_sender_visible(&app, visible)?;
+    Ok(visible)
 }
 
 /// 开关始终置顶

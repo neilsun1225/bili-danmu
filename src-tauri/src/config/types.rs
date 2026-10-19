@@ -248,6 +248,19 @@ pub struct RecentRoom {
 /// 最近房间保留条数上限
 pub const RECENT_ROOM_LIMIT: usize = 10;
 
+/// 发送框显示偏好（默认显示，兼容旧配置）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SenderConfig {
+    pub visible: bool,
+}
+
+impl Default for SenderConfig {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
 /// 配置文件结构（后续里程碑扩展字段）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -255,10 +268,44 @@ pub struct ConfigFile {
     pub auth: Option<AuthInfo>,
     pub overlay_style: OverlayStyle,
     pub overlay_bounds: Option<WindowBounds>,
+    pub sender: SenderConfig,
     pub danmaku_filter: DanmakuFilter,
     pub tts: TtsConfig,
     pub gift: GiftConfig,
     pub gift_tts: GiftTtsConfig,
     pub welcome: WelcomeConfig,
     pub recent_rooms: Vec<RecentRoom>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 旧配置缺少发送框设置时保持显示并保留原有偏好() {
+        let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+            "overlay_style": { "font_size": 24.0 },
+            "tts": { "enabled": true },
+            "recent_rooms": [{ "room_id": 123, "uname": "测试主播" }]
+        })).unwrap();
+        assert!(cfg.sender.visible);
+        assert_eq!(cfg.overlay_style.font_size, 24.0);
+        assert!(cfg.tts.enabled);
+        assert_eq!(cfg.recent_rooms[0].room_id, 123);
+    }
+
+    #[test]
+    fn 隐藏发送框的偏好在配置往返后保留() {
+        let mut cfg = ConfigFile::default();
+        cfg.sender.visible = false;
+        let saved = serde_json::to_string(&cfg).unwrap();
+        let restored: ConfigFile = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.sender.visible);
+    }
+
+    #[test]
+    fn 空发送框配置沿用显示默认值() {
+        let cfg: ConfigFile = serde_json::from_str(r#"{"sender":{}}"#).unwrap();
+        assert!(cfg.sender.visible);
+    }
 }

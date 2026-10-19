@@ -38,7 +38,7 @@ async function sendDanmaku() {
   }
 }
 
-/** 切换鼠标穿透（穿透开启后本按钮是唯一能关掉它的入口） */
+/** 切换鼠标穿透（发送框隐藏后可在主窗口「弹幕窗」设置中切换） */
 async function toggleClickthrough() {
   try {
     clickthrough.value = await invoke<boolean>('overlay_set_clickthrough', { enabled: !clickthrough.value })
@@ -165,7 +165,7 @@ onUnmounted(() => {
   border-radius: 0.4em;
 }
 
-/* 穿透开关：发送框是独立窗口，穿透开启后本按钮仍可点击，是「关掉穿透」的唯一入口。
+/* 穿透开关：发送框是独立窗口，穿透开启后本按钮仍可点击；主窗口也保留穿透开关。
    字号 / 上下 padding 与 .send-input 保持一致：em 是相对自身字号的，字号小一档
    行高框与 padding 会跟着缩，按钮就比输入框矮（0.8em 时矮 3.5px，看着不齐）。 */
 .ct-btn {

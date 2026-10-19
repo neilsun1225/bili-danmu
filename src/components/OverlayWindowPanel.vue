@@ -5,7 +5,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 
 import SettingRow from './SettingRow.vue'
 
-// 「弹幕窗」标签页：显示 / 鼠标穿透 / 始终置顶 / 宽高。
+// 「弹幕窗」标签页：弹幕窗与发送框显示 / 鼠标穿透 / 始终置顶 / 宽高。
 //
 // 状态全部留在本组件内（与弹幕样式、弹幕过滤无耦合），父页面只管挂载。
 // 设置卡片、设置行与开关的样式来自全局 styles/settings.css；
@@ -14,6 +14,9 @@ const winSize = ref({ width: 480, height: 240 })
 // 三个开关的初值与 Rust 侧 OverlayState 的默认值一致（创建窗口时就是这三态），
 // 避免读到真实状态前先闪一下错误勾选；挂载后再用命令读一次对齐
 const ov = ref({ visible: true, clickthrough: false, alwaysOnTop: true })
+const senderVisible = ref(true)
+const senderReady = ref(false)
+const senderSaving = ref(false)
 const errMsg = ref('')
 let errTimer: ReturnType<typeof setTimeout> | undefined
 // 窗口被手动拖动边缘缩放时由 Rust 广播 overlay-size 同步过来
@@ -21,6 +24,7 @@ let unlistenSize: UnlistenFn | undefined
 // 开关从发送框那一侧被改动时由 Rust 广播过来（两个入口必须双向同步）
 let unlistenVisible: UnlistenFn | undefined
 let unlistenClickthrough: UnlistenFn | undefined
+let unlistenSenderVisible: UnlistenFn | undefined
 
 /** 操作失败就地提示（3s 后自动消失），不打断页面其它区域的保存提示 */
 function fail(e: unknown) {
@@ -46,6 +50,23 @@ async function setClickthrough(v: boolean) {
     })
   } catch (e) {
     fail(e)
+  }
+}
+
+async function setSenderVisible(v: boolean) {
+  if (senderSaving.value) return
+  errMsg.value = ''
+  senderSaving.value = true
+  const previous = senderVisible.value
+  senderVisible.value = v
+  try {
+    senderVisible.value = await invoke<boolean>('sender_set_visible', { visible: v })
+  } catch (e) {
+    // 原生窗口操作失败时回显实际状态；保存失败则保留本次已生效的窗口状态。
+    senderVisible.value = await invoke<boolean>('sender_is_visible').catch(() => previous)
+    fail(e)
+  } finally {
+    senderSaving.value = false
   }
 }
 
@@ -83,6 +104,15 @@ onMounted(async () => {
   unlistenClickthrough = await listen<boolean>('overlay-clickthrough', e => {
     ov.value.clickthrough = e.payload
   })
+  unlistenSenderVisible = await listen<boolean>('sender-visible', e => {
+    senderVisible.value = e.payload
+  })
+  try {
+    senderVisible.value = await invoke<boolean>('sender_is_visible')
+    senderReady.value = true
+  } catch (e) {
+    fail(e)
+  }
   try {
     winSize.value = await invoke<{ width: number; height: number }>('overlay_get_size')
   } catch (e) {
@@ -100,6 +130,7 @@ onUnmounted(() => {
   unlistenSize?.()
   unlistenVisible?.()
   unlistenClickthrough?.()
+  unlistenSenderVisible?.()
   if (errTimer) clearTimeout(errTimer)
 })
 </script>
@@ -114,6 +145,16 @@ onUnmounted(() => {
         class="switch"
         :checked="ov.visible"
         @change="setVisible(($event.target as HTMLInputElement).checked)" />
+    </SettingRow>
+
+    <SettingRow label="显示发送框">
+      <input
+        type="checkbox"
+        class="switch"
+        aria-label="显示发送框"
+        :checked="senderVisible"
+        :disabled="!senderReady || senderSaving"
+        @change="setSenderVisible(($event.target as HTMLInputElement).checked)" />
     </SettingRow>
 
     <SettingRow label="鼠标穿透">
@@ -149,6 +190,7 @@ onUnmounted(() => {
     <p class="tip">
       关闭穿透后，可在弹幕窗上按住拖动、边缘调整大小；开启穿透后鼠标点击会落到弹幕窗下方的窗口。
       位置和大小自动保存，下次启动恢复。
+      关闭「显示发送框」会同时隐藏输入框和穿透按钮，重启后保持；可在此重新开启，鼠标穿透也可在此切换。
     </p>
   </div>
 </template>
