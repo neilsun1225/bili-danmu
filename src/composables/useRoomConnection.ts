@@ -24,6 +24,7 @@ export function useRoomConnection() {
   const errorMsg = ref('')
   // 最近连接过的直播间（Rust 持久化，输入框下方面包屑）
   const recentRooms = ref<RecentRoom[]>([])
+  let roomEdited = false
 
   let unlistenStatus: UnlistenFn | undefined
   let unlistenRecent: UnlistenFn | undefined
@@ -35,6 +36,7 @@ export function useRoomConnection() {
 
   /** 连接直播间；target 为面包屑直连的房间号，会回填输入框保证与连接目标一致 */
   async function connect(target?: number) {
+    roomEdited = true
     if (target !== undefined) {
       roomId.value = String(target)
     }
@@ -74,7 +76,24 @@ export function useRoomConnection() {
     }
   }
 
+  /** 只在启动时回填一次，慢读取不能覆盖已输入的房间号或触发自动连接。 */
+  async function restoreRoomId() {
+    try {
+      const id = await invoke<number | null>('get_last_room_id')
+      if (!roomEdited && roomId.value === '' && id && Number.isInteger(id) && id > 0) {
+        roomId.value = String(id)
+      }
+    } catch {
+      // 读取失败仍允许手动输入房间号。
+    }
+  }
+
+  function markRoomEdited() {
+    roomEdited = true
+  }
+
   onMounted(async () => {
+    void restoreRoomId()
     await loadRecentRooms()
     unlistenStatus = await listen<RoomStatusEvent>('room-status', e => {
       status.value = e.payload
@@ -102,6 +121,7 @@ export function useRoomConnection() {
     locked,
     statusText,
     connect,
+    markRoomEdited,
     disconnect,
   }
 }

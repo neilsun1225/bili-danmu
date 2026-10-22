@@ -9,7 +9,7 @@ use crate::config;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
 /// 房间连接状态（内部维护，对外通过 room-status 事件同步）
@@ -31,9 +31,21 @@ pub(crate) struct AppState {
 }
 
 /// B 站 WebSocket 认证成功后由 client 回调，同步内部状态机
-pub(crate) fn on_room_connected(app: &AppHandle, room_id: u32) {
+pub(crate) fn on_room_connected(app: &AppHandle, room_id: u32, cancel: &CancellationToken) {
     let st = app.state::<AppState>();
+    // 与断开操作共用同步边界，避免旧会话晚到的认证覆盖新会话记住的房间。
+    let current = st.cancel.lock().unwrap();
+    if current.as_ref() != Some(cancel) || cancel.is_cancelled() {
+        return;
+    }
     *st.status.lock().unwrap() = RoomStatus::Connected { room_id };
+    // 只在认证成功后记住房间，不能依赖异步昵称查询的完成顺序。
+    let _ = config::save_last_room_id(app, room_id);
+    log::info!("[bilibili] 房间 {room_id} 认证成功，弹幕会话已建立");
+    let _ = app.emit(
+        "room-status",
+        serde_json::json!({ "state": "connected", "roomId": room_id }),
+    );
 }
 
 /// 弹幕速率统计窗口（秒）：仪表盘展示「最近 RATE_WINDOW_SECS 秒接收条数」
@@ -66,6 +78,8 @@ pub(crate) fn clear_danmaku_ticks(app: &AppHandle) {
 
 /// Overlay 窗口状态（供 UI 同步开关与弹幕样式）
 pub(crate) struct OverlayState {
+    /// 配置恢复、窗口创建均已完成；设置页在此之前禁止操作，完成后广播 overlay-ready。
+    pub(crate) ready: Mutex<bool>,
     /// 是否可见。窗口 API 虽有 getter，但 Overlay 窗口要到 setup 才建好，
     /// 而前端启动时就会读一次——查窗口 API 会读到「未创建」的 false 并且此后再不重读，
     /// 故可见性与穿透、置顶一样以内存态为准；初值与创建窗口时的默认可见一致
@@ -91,6 +105,7 @@ pub(crate) struct OverlayState {
 impl Default for OverlayState {
     fn default() -> Self {
         Self {
+            ready: Mutex::new(false),
             visible: Mutex::new(true),
             sender_visible: Mutex::new(true),
             clickthrough: Mutex::new(false),

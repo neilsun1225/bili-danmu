@@ -273,8 +273,12 @@ export interface TtsConfig {
 /** 仪表盘状态快照（get_dashboard_status 返回，主窗口直播间页底部只读展示） */
 export interface DashboardStatus {
   overlay: {
+    /** 配置恢复与窗口创建均已完成 */
+    ready: boolean
     /** 弹幕窗是否可见 */
     visible: boolean
+    /** 发送框独立显示偏好 */
+    sender_visible: boolean
     /** 鼠标穿透是否开启 */
     clickthrough: boolean
     /** 是否始终置顶 */
