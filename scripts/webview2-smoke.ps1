@@ -122,7 +122,7 @@ $failures = [Collections.Generic.List[string]]::new()
 $phases = [Collections.Generic.List[object]]::new()
 $oldArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 $oldUserData = $env:WEBVIEW2_USER_DATA_FOLDER
-$debugPolicy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+$debugPolicy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
 $debugPolicyName = [IO.Path]::GetFileName($ExePath)
 $debugPolicyCreated = $false
 $startTime = [DateTime]::UtcNow
@@ -218,7 +218,7 @@ try {
   $underlay=Get-Content -LiteralPath (Join-Path $OutputDir 'background-ready.json') -Raw | ConvertFrom-Json
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port --remote-allow-origins=*"
   $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $scratch 'webview2-data'
-  # WebView2 在当前运行器中忽略附加参数环境变量；使用 Microsoft 文档支持的应用专属策略。
+  # 运行器以管理员权限启动；WebView2 忽略环境变量和 HKCU，使用应用专属的 HKLM 策略。
   if ((Get-ItemProperty -LiteralPath $debugPolicy -Name $debugPolicyName -ErrorAction SilentlyContinue)) {
     throw 'An app-specific WebView2 debugging policy already exists; refusing to overwrite it.'
   }
