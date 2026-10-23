@@ -257,6 +257,8 @@ try {
   $focusSent=[SmokeNative]::Click($inputX,$inputY)
   Write-Json 'native-input-focus.json' @{method='Win32 SendInput';x=$inputX;y=$inputY;eventsSent=$focusSent;senderHwnd=$senderWindow.Hwnd}
   if ($focusSent -ne 2) { $failures.Add('Windows SendInput did not accept the input focus click.') }
+  # 保留输入焦点但移开鼠标，避免 HTML title 的原生悬停提示遮住下方探针。
+  [SmokeNative]::SetCursorPos(10,10) | Out-Null
   Start-Sleep -Milliseconds 350
   Capture-Native 'input-focus-350ms' $before.sender.value ([long]$underlay.Hwnd) | Out-Null
   Start-Sleep -Milliseconds 900
@@ -274,6 +276,7 @@ try {
   $sent=[SmokeNative]::Click($clickX,$clickY)
   Write-Json 'native-click.json' @{method='Win32 SendInput';x=$clickX;y=$clickY;eventsSent=$sent;foregroundRequestAccepted=$focus;senderHwnd=$senderWindow.Hwnd}
   if ($sent -ne 2) { $failures.Add('Windows SendInput did not accept both mouse events.') }
+  [SmokeNative]::SetCursorPos(10,10) | Out-Null
   Start-Sleep -Milliseconds 350
   Capture-Native 'after-click-350ms' $before.sender.value ([long]$underlay.Hwnd) | Out-Null
   Start-Sleep -Milliseconds 900
