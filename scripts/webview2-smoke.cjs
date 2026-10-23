@@ -136,7 +136,8 @@ async function attach() {
     try {
       version = await (await fetch(`${endpoint}/json/version`, { signal: AbortSignal.timeout(1500) })).json()
       break
-    } catch {
+    } catch (error) {
+      report.cdpProbeError = String(error.stack || error)
       await sleep(250)
     }
   }

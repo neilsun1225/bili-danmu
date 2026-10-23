@@ -122,6 +122,9 @@ $failures = [Collections.Generic.List[string]]::new()
 $phases = [Collections.Generic.List[object]]::new()
 $oldArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 $oldUserData = $env:WEBVIEW2_USER_DATA_FOLDER
+$debugPolicy = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
+$debugPolicyName = [IO.Path]::GetFileName($ExePath)
+$debugPolicyCreated = $false
 $startTime = [DateTime]::UtcNow
 
 function Start-Child([string]$File, [string[]]$Arguments, [string]$LogPrefix) {
@@ -215,6 +218,13 @@ try {
   $underlay=Get-Content -LiteralPath (Join-Path $OutputDir 'background-ready.json') -Raw | ConvertFrom-Json
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port --remote-allow-origins=*"
   $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $scratch 'webview2-data'
+  # WebView2 在当前运行器中忽略附加参数环境变量；使用 Microsoft 文档支持的应用专属策略。
+  if ((Get-ItemProperty -LiteralPath $debugPolicy -Name $debugPolicyName -ErrorAction SilentlyContinue)) {
+    throw 'An app-specific WebView2 debugging policy already exists; refusing to overwrite it.'
+  }
+  New-Item -Path $debugPolicy -Force | Out-Null
+  New-ItemProperty -LiteralPath $debugPolicy -Name $debugPolicyName -Value $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS -PropertyType String | Out-Null
+  $debugPolicyCreated=$true
   $appInfo=[Diagnostics.ProcessStartInfo]::new()
   $appInfo.FileName=$ExePath
   $appInfo.UseShellExecute=$false
@@ -301,6 +311,7 @@ try {
   if ($appProcess -and -not $appProcess.HasExited) { & taskkill.exe /PID $appProcess.Id /T /F *> $null }
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=$oldArguments
   $env:WEBVIEW2_USER_DATA_FOLDER=$oldUserData
+  if ($debugPolicyCreated) { Remove-ItemProperty -LiteralPath $debugPolicy -Name $debugPolicyName -ErrorAction SilentlyContinue }
   Write-Json 'native-result.json' @{kind='actual-release-webview2';startedAt=$startTime.ToString('o');finishedAt=[DateTime]::UtcNow.ToString('o');passed=($failures.Count -eq 0);errors=$failures.ToArray();phases=$phases.ToArray();validationLimit='CI Windows desktop with real WebView2; physical game and OBS acceptance remain separate.'}
   # 浏览器数据和临时依赖不在产物目录内，绝不复制到交付包。
   if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
