@@ -29,7 +29,7 @@ sha2 = "0.10"
 futures-util = "0.3"
 brotli-decompressor = "4"
 flate2 = "1"
-windows-sys = { version = "0.61.2", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Media_Multimedia", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Security_Cryptography", "Win32_Foundation", "Win32_Media_Multimedia", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 # 锁 2.12.x：上游 2.13+ 要求 tauri ^2.12，而本机 tauri 还停在 2.11.5
 # （升 tauri 会连带换掉 wry / tao，透明悬浮窗最脆，单独一个 PR 再动）
 #

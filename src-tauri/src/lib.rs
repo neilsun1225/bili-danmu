@@ -12,7 +12,6 @@ mod commands;
 mod config;
 mod connection;
 mod gift;
-mod sender_region;
 mod state;
 mod tts;
 mod update;
@@ -156,6 +155,7 @@ pub fn run() {
                     if matches!(
                         event,
                         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                            | tauri::WindowEvent::ScaleFactorChanged { .. }
                     ) {
                         capture_overlay_bounds(&app2);
                         // 发送框始终吸附：弹幕窗移动/缩放时跟随
@@ -177,30 +177,26 @@ pub fn run() {
             });
 
             // Sender：发送框始终吸附在弹幕窗下方（无边框 / 置顶 / 跳过任务栏）
+            let (sender_indent, sender_width, sender_height) =
+                window::sender_layout_metrics(app.handle(), 1.0, initial_bounds.w.round() as u32);
             let sender_builder = WebviewWindowBuilder::new(
                 app,
                 "sender",
                 WebviewUrl::App("sender.html".into()),
             )
             .title("bili-danmu 发送")
-            .visible(false)
-            .inner_size(320.0, 80.0)
+            .visible(cfg.sender.visible)
+            .inner_size(sender_width as f64, sender_height as f64)
+            .min_inner_size(1.0, 1.0)
+            .position(initial_bounds.x + sender_indent as f64, initial_bounds.y + initial_bounds.h)
             .decorations(false)
             .transparent(true)
             .always_on_top(true)
             .resizable(false)
             .skip_taskbar(true)
             .shadow(false);
-            match sender_builder.build() {
-                Ok(sender) => {
-                    // 首次 DOM 测量前先用空区域，避免启动时出现完整矩形的透明死区。
-                    if let Err(e) = sender_region::initialize(&sender) {
-                        log::error!("[sender] 初始化点击区域失败: {e}");
-                    } else if cfg.sender.visible {
-                        let _ = sender.show();
-                    }
-                }
-                Err(e) => log::error!("[sender] 创建失败: {e}"),
+            if let Err(e) = sender_builder.build() {
+                log::error!("[sender] 创建失败: {e}");
             }
             // 创建后立即对齐到弹幕窗下方（覆盖默认位置/尺寸）
             sync_sender_docked(app.handle());
@@ -298,7 +294,6 @@ pub fn run() {
             commands::overlay_is_visible,
             commands::sender_is_visible,
             commands::sender_set_visible,
-            commands::sender_set_hit_regions,
             commands::overlay_set_always_on_top,
             commands::get_dashboard_status,
             commands::overlay_get_style,

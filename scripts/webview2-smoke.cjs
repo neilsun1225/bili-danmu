@@ -224,10 +224,48 @@ async function run() {
     before.sender.ok && before.sender.value.input?.width > 0 && before.sender.value.button?.width > 0,
     before.sender,
   )
+  const geometry = before.sender.ok && before.sender.value
+  check(
+    'two adjacent controls fill the sender client area',
+    geometry &&
+      Math.abs(geometry.input.left) < 1 &&
+      Math.abs(geometry.input.top) < 1 &&
+      Math.abs(geometry.input.right - geometry.button.left) < 1 &&
+      Math.abs(geometry.button.right - geometry.innerWidth) < 1 &&
+      Math.abs(geometry.input.bottom - geometry.innerHeight) < 1 &&
+      Math.abs(geometry.button.bottom - geometry.innerHeight) < 1,
+    geometry,
+  )
+
+  // CI 不登录 B 站；仅解除 HTML 输入框的 disabled 以测试真实系统焦点，后端仍保持未连接。
+  report.focusFixture = await pages.sender.evaluate(() => {
+    const input = document.querySelector('.send-input')
+    const originalDisabled = input.disabled
+    input.disabled = false
+    return { originalDisabled, operation: 'enable DOM input only for native focus check; no login or room connection' }
+  })
+  write('focus-fixture-ready.json', report.focusFixture)
 
   // PowerShell 读取 phase-before.json，暂时隐藏主窗口，
   // 抓取桌面和原生命中结果，再发送实际的 SendInput 点击。
-  const nativeDeadline = Date.now() + 35000
+  const nativeDeadline = Date.now() + 60000
+  while (!fs.existsSync(path.join(output, 'input-focused.done'))) {
+    if (Date.now() > nativeDeadline) throw new Error('Native input-focus phase timed out')
+    await sleep(100)
+  }
+  report.focus = await inspect('actual input focus', () =>
+    pages.sender.evaluate(() => ({
+      activeClass: document.activeElement?.className,
+      documentFocused: document.hasFocus(),
+    })),
+  )
+  check(
+    'actual OS click focused the sender input',
+    report.focus.ok && report.focus.value.activeClass.includes('send-input'),
+    report.focus,
+  )
+  await pages.sender.screenshot({ path: path.join(output, 'phase-input-focus-sender.png'), timeout: 6000 })
+  write('phase-input-focus.json', report.focus)
   while (!fs.existsSync(path.join(output, 'native-after.done'))) {
     if (Date.now() > nativeDeadline)
       throw new Error('Native Windows companion did not complete its click/capture phase')

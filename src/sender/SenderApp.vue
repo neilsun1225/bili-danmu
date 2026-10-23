@@ -1,10 +1,9 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { getCurrentWindow } from '@tauri-apps/api/window'
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 
-import type { OverlayStyle, RoomStatusEvent, SenderHitRect } from '../types/ipc'
+import type { OverlayStyle, RoomStatusEvent } from '../types/ipc'
 
 const danmakuText = ref('')
 const sending = ref(false)
@@ -15,43 +14,13 @@ const connected = ref(false)
 const clickthrough = ref(false)
 // 弹幕字号（与弹幕窗统一，界面元素按 em 相对缩放）
 const fontSize = ref(17)
-const inputElement = ref<HTMLInputElement | null>(null)
-const buttonElement = ref<HTMLButtonElement | null>(null)
 
 let unlistenRoom: UnlistenFn | undefined
 let unlistenStyle: UnlistenFn | undefined
 // 穿透从主界面那一侧被改动时由 Rust 广播过来（两个入口必须双向同步）
 let unlistenClickthrough: UnlistenFn | undefined
 let pollTimer: ReturnType<typeof setInterval> | undefined
-let unlistenScale: UnlistenFn | undefined
-let regionObserver: ResizeObserver | undefined
-let regionFrame = 0
-let lastRegion = ''
-
 const canSend = computed(() => loggedIn.value && connected.value)
-
-/** 只把两个可见控件的边界交给原生窗口，透明间距和余量不能挡住游戏点击。 */
-function syncHitRegion() {
-  regionFrame = 0
-  if (!inputElement.value || !buttonElement.value) return
-  const rects: SenderHitRect[] = [inputElement.value, buttonElement.value].map(el => {
-    const { left, top, right, bottom } = el.getBoundingClientRect()
-    return { left, top, right, bottom }
-  })
-  if (rects.some(r => r.right <= r.left || r.bottom <= r.top)) return
-  const scale = window.devicePixelRatio
-  const signature = JSON.stringify({ rects, scale })
-  if (lastRegion === signature) return
-  lastRegion = signature
-  void invoke('sender_set_hit_regions', { rects, scale }).catch(e => {
-    if (lastRegion === signature) lastRegion = ''
-    console.error('更新发送框点击区域失败', e)
-  })
-}
-
-function scheduleHitRegion() {
-  if (!regionFrame) regionFrame = requestAnimationFrame(syncHitRegion)
-}
 
 async function sendDanmaku() {
   const text = danmakuText.value.trim()
@@ -98,14 +67,6 @@ async function poll() {
 }
 
 onMounted(async () => {
-  regionObserver = new ResizeObserver(scheduleHitRegion)
-  if (inputElement.value) regionObserver.observe(inputElement.value)
-  if (buttonElement.value) regionObserver.observe(buttonElement.value)
-  window.addEventListener('resize', scheduleHitRegion)
-  // 空原生区域可能暂停绘制，首次测量不能等 requestAnimationFrame。
-  syncHitRegion()
-  unlistenScale = await getCurrentWindow().onScaleChanged(scheduleHitRegion)
-  scheduleHitRegion()
   unlistenRoom = await listen<RoomStatusEvent>('room-status', e => {
     connected.value = e.payload.state === 'connected'
   })
@@ -118,8 +79,6 @@ onMounted(async () => {
   try {
     const s = await invoke<OverlayStyle>('overlay_get_style')
     fontSize.value = s.font_size
-    await nextTick()
-    syncHitRegion()
   } catch {
     /* ignore */
   }
@@ -128,10 +87,6 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  regionObserver?.disconnect()
-  window.removeEventListener('resize', scheduleHitRegion)
-  if (regionFrame) cancelAnimationFrame(regionFrame)
-  unlistenScale?.()
   if (pollTimer) clearInterval(pollTimer)
   unlistenRoom?.()
   unlistenStyle?.()
@@ -143,7 +98,6 @@ onUnmounted(() => {
   <div class="sender-root" :style="{ fontSize: fontSize + 'px' }" @contextmenu.prevent>
     <div class="input-row">
       <input
-        ref="inputElement"
         v-model="danmakuText"
         class="send-input"
         :class="{ 'has-error': sendError }"
@@ -157,7 +111,6 @@ onUnmounted(() => {
         @input="sendError = ''"
         @keyup.enter="sendDanmaku" />
       <button
-        ref="buttonElement"
         type="button"
         class="ct-btn"
         :class="{ on: clickthrough }"
@@ -183,7 +136,8 @@ onUnmounted(() => {
   height: 100%;
   /* stretch 而非 center：两个子元素天然等高（字号/padding 一致），stretch 再上一层保险 */
   align-items: stretch;
-  gap: 0.25em;
+  /* 两个控件相邻铺满整个原生窗口，避免透明间距成为鼠标死区。 */
+  gap: 0;
 }
 
 /* 输入区字号比弹幕小一档（0.9em）：发送框宽度受「不能挡太多游戏画面」约束
@@ -196,7 +150,7 @@ onUnmounted(() => {
   -webkit-appearance: none;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 0.4em;
+  border-radius: 0;
   color: #fff;
   padding: 0.3em;
   font-size: 0.9em;
@@ -211,7 +165,7 @@ onUnmounted(() => {
 
 .send-input:focus {
   border-color: rgba(120, 180, 255, 0.95);
-  border-radius: 0.4em;
+  border-radius: 0;
 }
 
 .send-input.has-error {
@@ -233,7 +187,7 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 0.4em;
+  border-radius: 0;
   padding: 0.3em 0.45em;
   transition:
     background 0.12s ease,

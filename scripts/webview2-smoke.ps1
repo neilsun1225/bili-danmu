@@ -161,12 +161,18 @@ function Capture-Native([string]$Phase, $Geometry, [long]$UnderlayHwnd) {
     $inputRect=$Geometry.input; $buttonRect=$Geometry.button
     if (-not $inputRect -or -not $buttonRect -or $scale -le 0) { throw 'Actual sender DOM geometry is unavailable.' }
     $origin=$senderWindow.ClientOrigin
+    $frameInsets=@{left=$origin.X-$senderWindow.Bounds.Left;top=$origin.Y-$senderWindow.Bounds.Top}
+    if ($frameInsets.left -ne 0 -or $frameInsets.top -ne 0) {
+      $failures.Add("$Phase sender has unexpected native frame/titlebar insets")
+    }
     $samples=@(
       @{name='input'; cssX=($inputRect.left+$inputRect.right)/2; cssY=($inputRect.top+$inputRect.bottom)/2; extraY=0; expectedRoot=$senderWindow.Hwnd},
       @{name='button'; cssX=($buttonRect.left+$buttonRect.right)/2; cssY=($buttonRect.top+$buttonRect.bottom)/2; extraY=0; expectedRoot=$senderWindow.Hwnd},
-      @{name='gap'; cssX=($inputRect.right+$buttonRect.left)/2; cssY=($buttonRect.top+$buttonRect.bottom)/2; extraY=0; expectedRoot=$UnderlayHwnd},
       @{name='below8'; cssX=($inputRect.left+$buttonRect.right)/2; cssY=[Math]::Max($inputRect.bottom,$buttonRect.bottom); extraY=8; expectedRoot=$UnderlayHwnd}
     )
+    if (($buttonRect.left-$inputRect.right)*$scale -gt 1) {
+      $samples+=@{name='gap'; cssX=($inputRect.right+$buttonRect.left)/2; cssY=($buttonRect.top+$buttonRect.bottom)/2; extraY=0; expectedRoot=$UnderlayHwnd}
+    }
     $points=@(foreach ($sample in $samples) {
       $x=$origin.X+[int][Math]::Round($sample.cssX*$scale)
       $y=$origin.Y+[int][Math]::Round($sample.cssY*$scale)+$sample.extraY
@@ -179,7 +185,7 @@ function Capture-Native([string]$Phase, $Geometry, [long]$UnderlayHwnd) {
       if (-not $nativeHitMatches -or -not $underlayColorMatches) { $failures.Add("$Phase $($sample.name): unexpected native HWND or underlay pixels") }
       @{name=$sample.name; x=$x; y=$y; screenPointValid=$inside; pixel=$rgb; expectedRoot=$sample.expectedRoot; hit=$hit; nativeHitMatches=$nativeHitMatches; underlayColorMatches=$underlayColorMatches}
     })
-    $result=@{phase=$Phase; utc=[DateTime]::UtcNow.ToString('o'); windows=$windows; desktop=@{left=$left;top=$top;width=$width;height=$height}; samples=$points}
+    $result=@{phase=$Phase; utc=[DateTime]::UtcNow.ToString('o'); windows=$windows; senderFrameInsets=$frameInsets; desktop=@{left=$left;top=$top;width=$width;height=$height}; samples=$points}
     Write-Json ($Phase + '-native.json') $result
     $phases.Add($result)
     return $senderWindow
@@ -224,6 +230,28 @@ try {
   [SmokeNative]::SetCursorPos(10,10) | Out-Null
   Start-Sleep -Milliseconds 300
   $senderWindow=Capture-Native 'before-click' $before.sender.value ([long]$underlay.Hwnd)
+  $focusDeadline=[DateTime]::UtcNow.AddSeconds(15)
+  while (-not (Test-Path -LiteralPath (Join-Path $OutputDir 'focus-fixture-ready.json'))) {
+    if ($nodeProcess.Process.HasExited -or [DateTime]::UtcNow -gt $focusDeadline) { throw 'The input focus fixture did not become ready.' }
+    Start-Sleep -Milliseconds 100
+  }
+  $inputRect=$before.sender.value.input; $scale=[double]$before.sender.value.devicePixelRatio
+  $inputX=$senderWindow.ClientOrigin.X+[int][Math]::Round(($inputRect.left+$inputRect.right)/2*$scale)
+  $inputY=$senderWindow.ClientOrigin.Y+[int][Math]::Round(($inputRect.top+$inputRect.bottom)/2*$scale)
+  [SmokeNative]::SetForegroundWindow([IntPtr]$senderWindow.Hwnd) | Out-Null
+  $focusSent=[SmokeNative]::Click($inputX,$inputY)
+  Write-Json 'native-input-focus.json' @{method='Win32 SendInput';x=$inputX;y=$inputY;eventsSent=$focusSent;senderHwnd=$senderWindow.Hwnd}
+  if ($focusSent -ne 2) { $failures.Add('Windows SendInput did not accept the input focus click.') }
+  Start-Sleep -Milliseconds 350
+  Capture-Native 'input-focus-350ms' $before.sender.value ([long]$underlay.Hwnd) | Out-Null
+  Start-Sleep -Milliseconds 900
+  Capture-Native 'input-focus-1250ms' $before.sender.value ([long]$underlay.Hwnd) | Out-Null
+  'input focus captured' | Set-Content -LiteralPath (Join-Path $OutputDir 'input-focused.done') -Encoding utf8
+  $focusDeadline=[DateTime]::UtcNow.AddSeconds(15)
+  while (-not (Test-Path -LiteralPath (Join-Path $OutputDir 'phase-input-focus.json'))) {
+    if ($nodeProcess.Process.HasExited -or [DateTime]::UtcNow -gt $focusDeadline) { throw 'The actual WebView2 input focus was not recorded.' }
+    Start-Sleep -Milliseconds 100
+  }
   $button=$before.sender.value.button; $scale=[double]$before.sender.value.devicePixelRatio
   $clickX=$senderWindow.ClientOrigin.X+[int][Math]::Round(($button.left+$button.right)/2*$scale)
   $clickY=$senderWindow.ClientOrigin.Y+[int][Math]::Round(($button.top+$button.bottom)/2*$scale)

@@ -114,7 +114,7 @@ const SENDER_MAX_WIDTH: f64 = 260.0;
 /// 错误改为输入框边框和悬停提示，不再预留下方透明区域。
 /// 宽度是硬约束（不能被太多游戏画面），输入区靠 SenderApp.vue 里的字号 0.9em + 紧内边距
 /// 才放得下约 8 个中文字；想再宽只能调 SENDER_WIDTH_RATIO / SENDER_MAX_WIDTH。
-fn sender_layout_metrics(app: &AppHandle, scale: f64, overlay_width: u32) -> (u32, u32, u32) {
+pub(crate) fn sender_layout_metrics(app: &AppHandle, scale: f64, overlay_width: u32) -> (u32, u32, u32) {
     let font_size = app.state::<OverlayState>().style.lock().unwrap().font_size;
     // 面板宽度用未取整的浮点算：缩进先取整会把那半个像素的误差带进宽度
     let left = (OVERLAY_PADDING + (ROLE_INDENT_EM - PANEL_INSET_EM) * font_size) * scale;
