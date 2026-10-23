@@ -18,18 +18,15 @@ const winSize = ref({ width: 480, height: 240 })
 const ov = ref({ visible: true, clickthrough: false, alwaysOnTop: true })
 const senderVisible = ref(true)
 const windowReady = ref(false)
+const sizeReady = ref(false)
 const windowSaving = ref(false)
 const senderSaving = ref(false)
 const errMsg = ref('')
 let errTimer: ReturnType<typeof setTimeout> | undefined
-// 窗口被手动拖动边缘缩放时由 Rust 广播 overlay-size 同步过来
-let unlistenSize: UnlistenFn | undefined
-// 开关从发送框那一侧被改动时由 Rust 广播过来（两个入口必须双向同步）
-let unlistenVisible: UnlistenFn | undefined
-let unlistenClickthrough: UnlistenFn | undefined
-let unlistenSenderVisible: UnlistenFn | undefined
-let unlistenAlwaysOnTop: UnlistenFn | undefined
-let unlistenReady: UnlistenFn | undefined
+const unlisteners: UnlistenFn[] = []
+let retryTimer: ReturnType<typeof setInterval> | undefined
+let loading = false
+let disposed = false
 
 /** 操作失败就地提示（3s 后自动消失），不打断页面其它区域的保存提示 */
 function fail(e: unknown) {
@@ -47,8 +44,40 @@ async function loadWindowSettings() {
     alwaysOnTop: overlay.always_on_top,
   }
   senderVisible.value = overlay.sender_visible
-  winSize.value = await invoke<{ width: number; height: number }>('overlay_get_size')
+  // 开关与尺寸分别就绪：单次尺寸读取失败不能把穿透等开关永久锁住。
   windowReady.value = true
+  try {
+    winSize.value = await invoke<{ width: number; height: number }>('overlay_get_size')
+    sizeReady.value = true
+  } catch (e) {
+    fail(e)
+  }
+}
+
+async function restoreWindowSettings() {
+  if (loading || disposed) return
+  loading = true
+  try {
+    await loadWindowSettings()
+  } catch (e) {
+    fail(e)
+  } finally {
+    loading = false
+    if (windowReady.value && sizeReady.value && retryTimer) {
+      clearInterval(retryTimer)
+      retryTimer = undefined
+    }
+  }
+}
+
+function subscribe<T>(event: string, handle: (payload: T) => void) {
+  // 监听注册单独失败时仍要读快照；不能让一个事件阻断整个设置页初始化。
+  void listen<T>(event, e => handle(e.payload))
+    .then(unlisten => {
+      if (disposed) unlisten()
+      else unlisteners.push(unlisten)
+    })
+    .catch(fail)
 }
 
 async function setWindowFlag(key: 'visible' | 'clickthrough' | 'alwaysOnTop', v: boolean) {
@@ -104,41 +133,34 @@ async function commitSize() {
   }
 }
 
-onMounted(async () => {
-  // 先在监听：读取尺寸与手动缩放都走同一条路，不必区分先后
-  unlistenSize = await listen<{ width: number; height: number }>('overlay-size', e => {
-    winSize.value = e.payload
+onMounted(() => {
+  subscribe<{ width: number; height: number }>('overlay-size', size => {
+    winSize.value = size
+    sizeReady.value = true
   })
-  unlistenVisible = await listen<boolean>('overlay-visible', e => {
-    ov.value.visible = e.payload
+  subscribe<boolean>('overlay-visible', visible => {
+    ov.value.visible = visible
   })
-  unlistenClickthrough = await listen<boolean>('overlay-clickthrough', e => {
-    ov.value.clickthrough = e.payload
+  subscribe<boolean>('overlay-clickthrough', enabled => {
+    ov.value.clickthrough = enabled
   })
-  unlistenSenderVisible = await listen<boolean>('sender-visible', e => {
-    senderVisible.value = e.payload
+  subscribe<boolean>('sender-visible', visible => {
+    senderVisible.value = visible
   })
-  unlistenAlwaysOnTop = await listen<boolean>('overlay-always-on-top', e => {
-    ov.value.alwaysOnTop = e.payload
+  subscribe<boolean>('overlay-always-on-top', enabled => {
+    ov.value.alwaysOnTop = enabled
   })
-  // 先订阅再读取：无论窗口恢复发生在页面挂载前还是挂载中，都能获得最终配置。
-  unlistenReady = await listen('overlay-ready', () => {
-    void loadWindowSettings().catch(fail)
+  subscribe('overlay-ready', () => {
+    void restoreWindowSettings()
   })
-  try {
-    await loadWindowSettings()
-  } catch (e) {
-    fail(e)
-  }
+  retryTimer = setInterval(() => void restoreWindowSettings(), 1000)
+  void restoreWindowSettings()
 })
 
 onUnmounted(() => {
-  unlistenSize?.()
-  unlistenVisible?.()
-  unlistenClickthrough?.()
-  unlistenSenderVisible?.()
-  unlistenAlwaysOnTop?.()
-  unlistenReady?.()
+  disposed = true
+  for (const unlisten of unlisteners) unlisten()
+  if (retryTimer) clearInterval(retryTimer)
   if (errTimer) clearTimeout(errTimer)
 })
 </script>
@@ -195,7 +217,7 @@ onUnmounted(() => {
           min="240"
           max="1600"
           step="10"
-          :disabled="!windowReady"
+          :disabled="!sizeReady"
           @change="commitSize" />
         <span class="value">{{ winSize.width }}px</span>
       </div>
@@ -209,7 +231,7 @@ onUnmounted(() => {
           min="120"
           max="900"
           step="10"
-          :disabled="!windowReady"
+          :disabled="!sizeReady"
           @change="commitSize" />
         <span class="value">{{ winSize.height }}px</span>
       </div>

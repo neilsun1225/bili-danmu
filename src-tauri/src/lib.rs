@@ -82,6 +82,10 @@ pub fn run() {
         .setup(|app| {
             // 加载持久化配置：登录态 → AppState.auth；样式/位置 → OverlayState
             let cfg = config::load_config(app.handle());
+            // Windows 首次原生尺寸读取可能尚未完成；先提供经过验证的初始布局。
+            let initial_bounds = cfg.overlay_bounds.filter(|b| b.is_valid()).unwrap_or(config::WindowBounds {
+                x: 80.0, y: 80.0, w: 700.0, h: 400.0,
+            });
             if let Some(auth) = &cfg.auth {
                 let st = app.state::<AppState>();
                 *st.auth.lock().unwrap() = Some(auth.clone());
@@ -95,6 +99,7 @@ pub fn run() {
                 *ov.clickthrough.lock().unwrap() = cfg.overlay_window.clickthrough;
                 *ov.always_on_top.lock().unwrap() = cfg.overlay_window.always_on_top;
                 *ov.saved_bounds.lock().unwrap() = cfg.overlay_bounds;
+                *ov.bounds.lock().unwrap() = Some(initial_bounds);
                 *ov.style.lock().unwrap() = cfg.overlay_style.clone();
                 *ov.sender_visible.lock().unwrap() = cfg.sender.visible;
                 *ov.filter.lock().unwrap() = cfg.danmaku_filter.clone();
@@ -115,14 +120,14 @@ pub fn run() {
             tts::spawn_worker(app.handle().clone());
 
             // Overlay：透明 / 无边框 / 置顶 / 可调整 / 跳过任务栏，恢复上次位置
-            let mut win_builder = WebviewWindowBuilder::new(
+            let win_builder = WebviewWindowBuilder::new(
                 app,
                 "overlay",
                 WebviewUrl::App("overlay.html".into()),
             )
             .title("bili-danmu overlay")
-            .inner_size(700.0, 400.0)
-            .position(80.0, 80.0)
+            .inner_size(initial_bounds.w, initial_bounds.h)
+            .position(initial_bounds.x, initial_bounds.y)
             .decorations(false)
             .transparent(true)
             .visible(false)
@@ -131,9 +136,6 @@ pub fn run() {
             .min_inner_size(120.0, 40.0)
             .skip_taskbar(true)
             .shadow(false);
-            if let Some(b) = cfg.overlay_bounds.filter(|b| b.is_valid()) {
-                win_builder = win_builder.position(b.x, b.y).inner_size(b.w, b.h);
-            }
             if let Ok(win) = win_builder.build() {
                 // 先恢复穿透再显示，避免启动时短暂拦住游戏鼠标。
                 if let Err(e) = win.set_ignore_cursor_events(cfg.overlay_window.clickthrough) {
