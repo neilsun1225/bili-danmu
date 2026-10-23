@@ -74,6 +74,19 @@ pub(crate) fn sender_is_visible(state: State<'_, OverlayState>) -> bool {
     *state.sender_visible.lock().unwrap()
 }
 
+/// 同步命令在 Tauri 主线程执行；只能裁剪调用者自己的发送窗口。
+#[tauri::command]
+pub(crate) fn sender_set_hit_regions(
+    window: tauri::WebviewWindow,
+    rects: [crate::sender_region::HitRect; 2],
+    scale: f64,
+) -> Result<(), String> {
+    if window.label() != "sender" {
+        return Err("仅发送框可更新自己的点击区域".into());
+    }
+    crate::sender_region::update(&window, &rects, scale)
+}
+
 /// 显示 / 隐藏整个发送框窗口，并记住偏好
 #[tauri::command]
 pub(crate) fn sender_set_visible(

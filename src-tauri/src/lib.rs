@@ -12,6 +12,7 @@ mod commands;
 mod config;
 mod connection;
 mod gift;
+mod sender_region;
 mod state;
 mod tts;
 mod update;
@@ -180,7 +181,7 @@ pub fn run() {
                 WebviewUrl::App("sender.html".into()),
             )
             .title("bili-danmu 发送")
-            .visible(cfg.sender.visible)
+            .visible(false)
             .inner_size(320.0, 80.0)
             .decorations(false)
             .transparent(true)
@@ -188,8 +189,16 @@ pub fn run() {
             .resizable(false)
             .skip_taskbar(true)
             .shadow(false);
-            if sender_builder.build().is_err() {
-                log::error!("[sender] 创建失败");
+            match sender_builder.build() {
+                Ok(sender) => {
+                    // 首次 DOM 测量前先用空区域，避免启动时出现完整矩形的透明死区。
+                    if let Err(e) = sender_region::initialize(&sender) {
+                        log::error!("[sender] 初始化点击区域失败: {e}");
+                    } else if cfg.sender.visible {
+                        let _ = sender.show();
+                    }
+                }
+                Err(e) => log::error!("[sender] 创建失败: {e}"),
             }
             // 创建后立即对齐到弹幕窗下方（覆盖默认位置/尺寸）
             sync_sender_docked(app.handle());
@@ -287,6 +296,7 @@ pub fn run() {
             commands::overlay_is_visible,
             commands::sender_is_visible,
             commands::sender_set_visible,
+            commands::sender_set_hit_regions,
             commands::overlay_set_always_on_top,
             commands::get_dashboard_status,
             commands::overlay_get_style,

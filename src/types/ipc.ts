@@ -1,6 +1,14 @@
 // Rust ↔ Vue IPC 共享类型定义
 // 与 src-tauri 中 emit / invoke 的 payload 保持同步
 
+/** 发送框中两个控件的 CSS 像素边界，原生窗口据此收紧可点击区域。 */
+export interface SenderHitRect {
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
 /** 连接状态事件（Rust → Vue，事件名 room-status） */
 export type RoomStatusEvent =
   | { state: 'disconnected' }

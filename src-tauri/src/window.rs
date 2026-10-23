@@ -110,7 +110,8 @@ const SENDER_MAX_WIDTH: f64 = 260.0;
 /// 落在面板背景左边缘那条线上；宽度 = 面板宽度（弹幕窗宽 − 左缩进 − 右侧 padding）的 50%，
 /// 且不超过 SENDER_MAX_WIDTH（逻辑 px）。
 ///
-/// 高度要同时容下输入行与出错时才出现的提示行（提示行是 v-if，不能按它不显示时的高度算）。
+/// 高度只容纳输入行：0.9em 字号 ×（1.2 行高 + 上下各 0.3em padding）+ 2px 边框。
+/// 错误改为输入框边框和悬停提示，不再预留下方透明区域。
 /// 宽度是硬约束（不能被太多游戏画面），输入区靠 SenderApp.vue 里的字号 0.9em + 紧内边距
 /// 才放得下约 8 个中文字；想再宽只能调 SENDER_WIDTH_RATIO / SENDER_MAX_WIDTH。
 fn sender_layout_metrics(app: &AppHandle, scale: f64, overlay_width: u32) -> (u32, u32, u32) {
@@ -123,7 +124,7 @@ fn sender_layout_metrics(app: &AppHandle, scale: f64, overlay_width: u32) -> (u3
         .min(SENDER_MAX_WIDTH * scale)
         .round() as u32)
         .max(1);
-    let h = ((font_size * 3.1 + 6.0) * scale).round() as u32;
+    let h = ((font_size * 0.9 * 1.8 + 2.0) * scale).ceil() as u32;
     (indent, w, h)
 }
 
