@@ -38,6 +38,16 @@ jobs:
         run: cargo test --lib --locked
       - name: 构建独立试用程序
         run: pnpm tauri build --no-bundle --config src-tauri/tauri.preview.conf.json
+      - name: 真实 Windows WebView2 检查
+        shell: pwsh
+        run: ./scripts/webview2-smoke.ps1 -ExePath ./src-tauri/target/release/bili-danmu.exe -OutputDir ./Task/webview2-smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bili-danmu-webview2-smoke
+          path: Task/webview2-smoke/
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: bili-danmu-hide-sender-windows-x64
