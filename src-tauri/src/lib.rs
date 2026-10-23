@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 use window::{capture_overlay_bounds, flush_overlay_bounds, sync_sender_docked};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -81,6 +81,10 @@ pub fn run() {
         .setup(|app| {
             // 加载持久化配置：登录态 → AppState.auth；样式/位置 → OverlayState
             let cfg = config::load_config(app.handle());
+            // Windows 首次原生尺寸读取可能尚未完成；先提供经过验证的初始布局。
+            let initial_bounds = cfg.overlay_bounds.filter(|b| b.is_valid()).unwrap_or(config::WindowBounds {
+                x: 80.0, y: 80.0, w: 700.0, h: 400.0,
+            });
             if let Some(auth) = &cfg.auth {
                 let st = app.state::<AppState>();
                 *st.auth.lock().unwrap() = Some(auth.clone());
@@ -90,7 +94,13 @@ pub fn run() {
             }
             {
                 let ov = app.state::<OverlayState>();
+                *ov.visible.lock().unwrap() = cfg.overlay_window.visible;
+                *ov.clickthrough.lock().unwrap() = cfg.overlay_window.clickthrough;
+                *ov.always_on_top.lock().unwrap() = cfg.overlay_window.always_on_top;
+                *ov.saved_bounds.lock().unwrap() = cfg.overlay_bounds;
+                *ov.bounds.lock().unwrap() = Some(initial_bounds);
                 *ov.style.lock().unwrap() = cfg.overlay_style.clone();
+                *ov.sender_visible.lock().unwrap() = cfg.sender.visible;
                 *ov.filter.lock().unwrap() = cfg.danmaku_filter.clone();
                 *ov.gift.lock().unwrap() = cfg.gift.clone();
                 *ov.welcome.lock().unwrap() = cfg.welcome.clone();
@@ -109,25 +119,34 @@ pub fn run() {
             tts::spawn_worker(app.handle().clone());
 
             // Overlay：透明 / 无边框 / 置顶 / 可调整 / 跳过任务栏，恢复上次位置
-            let mut win_builder = WebviewWindowBuilder::new(
+            let win_builder = WebviewWindowBuilder::new(
                 app,
                 "overlay",
                 WebviewUrl::App("overlay.html".into()),
             )
             .title("bili-danmu overlay")
-            .inner_size(700.0, 400.0)
-            .position(80.0, 80.0)
+            .inner_size(initial_bounds.w, initial_bounds.h)
+            .position(initial_bounds.x, initial_bounds.y)
             .decorations(false)
             .transparent(true)
-            .always_on_top(true)
+            .visible(false)
+            .always_on_top(cfg.overlay_window.always_on_top)
             .resizable(true)
             .min_inner_size(120.0, 40.0)
             .skip_taskbar(true)
             .shadow(false);
-            if let Some(b) = cfg.overlay_bounds {
-                win_builder = win_builder.position(b.x, b.y).inner_size(b.w, b.h);
-            }
             if let Ok(win) = win_builder.build() {
+                // 先恢复穿透再显示，避免启动时短暂拦住游戏鼠标。
+                if let Err(e) = win.set_ignore_cursor_events(cfg.overlay_window.clickthrough) {
+                    log::error!("[overlay] 恢复鼠标穿透失败: {e}");
+                    *app.state::<OverlayState>().clickthrough.lock().unwrap() = false;
+                }
+                if cfg.overlay_window.visible {
+                    if let Err(e) = win.show() {
+                        log::error!("[overlay] 恢复窗口显示失败: {e}");
+                        *app.state::<OverlayState>().visible.lock().unwrap() = false;
+                    }
+                }
                 let app2 = app.handle().clone();
                 // 播种初始尺寸：窗口建好后先把真实 bounds 写进内存态（顺带广播一次 overlay-size），
                 // 否则前端启动时读 overlay_get_size 会撞上「窗口还没建好」的竞态、滑块停在默认值
@@ -136,6 +155,7 @@ pub fn run() {
                     if matches!(
                         event,
                         tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                            | tauri::WindowEvent::ScaleFactorChanged { .. }
                     ) {
                         capture_overlay_bounds(&app2);
                         // 发送框始终吸附：弹幕窗移动/缩放时跟随
@@ -157,24 +177,31 @@ pub fn run() {
             });
 
             // Sender：发送框始终吸附在弹幕窗下方（无边框 / 置顶 / 跳过任务栏）
+            let (sender_indent, sender_width, sender_height) =
+                window::sender_layout_metrics(app.handle(), 1.0, initial_bounds.w.round() as u32);
             let sender_builder = WebviewWindowBuilder::new(
                 app,
                 "sender",
                 WebviewUrl::App("sender.html".into()),
             )
             .title("bili-danmu 发送")
-            .inner_size(320.0, 80.0)
+            .visible(cfg.sender.visible)
+            .inner_size(sender_width as f64, sender_height as f64)
+            .min_inner_size(1.0, 1.0)
+            .position(initial_bounds.x + sender_indent as f64, initial_bounds.y + initial_bounds.h)
             .decorations(false)
             .transparent(true)
             .always_on_top(true)
             .resizable(false)
             .skip_taskbar(true)
             .shadow(false);
-            if sender_builder.build().is_err() {
-                log::error!("[sender] 创建失败");
+            if let Err(e) = sender_builder.build() {
+                log::error!("[sender] 创建失败: {e}");
             }
             // 创建后立即对齐到弹幕窗下方（覆盖默认位置/尺寸）
             sync_sender_docked(app.handle());
+            *app.state::<OverlayState>().ready.lock().unwrap() = true;
+            let _ = app.emit("overlay-ready", ());
 
             // 主窗口 × → 最小化到托盘（不退出；由托盘菜单唤出/退出）
             if let Some(main_win) = app.get_webview_window("main") {
@@ -215,6 +242,9 @@ pub fn run() {
                             }
                         }
                         "quit" => {
+                            // 销毁窗口前读取最终位置，覆盖最后一次拖动后不足 2 秒即退出的情况。
+                            capture_overlay_bounds(app);
+                            flush_overlay_bounds(app);
                             // 先销毁窗口再退出：destroy 绕过主窗 ×→隐藏 拦截，
                             // 让 WebView2 在进程退出前释放 HWND，避免 1412 unregister 竞态
                             let wins: Vec<_> =
@@ -262,6 +292,8 @@ pub fn run() {
             commands::overlay_set_clickthrough,
             commands::overlay_get_clickthrough,
             commands::overlay_is_visible,
+            commands::sender_is_visible,
+            commands::sender_set_visible,
             commands::overlay_set_always_on_top,
             commands::get_dashboard_status,
             commands::overlay_get_style,
@@ -280,6 +312,7 @@ pub fn run() {
             commands::tts_list_voices,
             commands::tts_refresh_voices,
             commands::get_recent_rooms,
+            commands::get_last_room_id,
         commands::list_following_live,
             commands::overlay_get_size,
             commands::overlay_set_size,
@@ -291,7 +324,8 @@ pub fn run() {
 
     // 退出前落盘 Overlay 窗口位置
     app.run(|handle, event| {
-        if let tauri::RunEvent::Exit = event {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            capture_overlay_bounds(handle);
             flush_overlay_bounds(handle);
         }
     });

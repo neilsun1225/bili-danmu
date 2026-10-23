@@ -5,7 +5,9 @@ import { onMounted, onUnmounted, ref } from 'vue'
 
 import SettingRow from './SettingRow.vue'
 
-// 「弹幕窗」标签页：显示 / 鼠标穿透 / 始终置顶 / 宽高。
+import type { DashboardStatus } from '../types/ipc'
+
+// 「弹幕窗」标签页：弹幕窗与发送框显示 / 鼠标穿透 / 始终置顶 / 宽高。
 //
 // 状态全部留在本组件内（与弹幕样式、弹幕过滤无耦合），父页面只管挂载。
 // 设置卡片、设置行与开关的样式来自全局 styles/settings.css；
@@ -14,13 +16,17 @@ const winSize = ref({ width: 480, height: 240 })
 // 三个开关的初值与 Rust 侧 OverlayState 的默认值一致（创建窗口时就是这三态），
 // 避免读到真实状态前先闪一下错误勾选；挂载后再用命令读一次对齐
 const ov = ref({ visible: true, clickthrough: false, alwaysOnTop: true })
+const senderVisible = ref(true)
+const windowReady = ref(false)
+const sizeReady = ref(false)
+const windowSaving = ref(false)
+const senderSaving = ref(false)
 const errMsg = ref('')
 let errTimer: ReturnType<typeof setTimeout> | undefined
-// 窗口被手动拖动边缘缩放时由 Rust 广播 overlay-size 同步过来
-let unlistenSize: UnlistenFn | undefined
-// 开关从发送框那一侧被改动时由 Rust 广播过来（两个入口必须双向同步）
-let unlistenVisible: UnlistenFn | undefined
-let unlistenClickthrough: UnlistenFn | undefined
+const unlisteners: UnlistenFn[] = []
+let retryTimer: ReturnType<typeof setInterval> | undefined
+let loading = false
+let disposed = false
 
 /** 操作失败就地提示（3s 后自动消失），不打断页面其它区域的保存提示 */
 function fail(e: unknown) {
@@ -29,34 +35,89 @@ function fail(e: unknown) {
   errTimer = setTimeout(() => (errMsg.value = ''), 3000)
 }
 
-async function setVisible(v: boolean) {
-  errMsg.value = ''
+async function loadWindowSettings() {
+  const { overlay } = await invoke<DashboardStatus>('get_dashboard_status')
+  if (!overlay.ready) return
+  ov.value = {
+    visible: overlay.visible,
+    clickthrough: overlay.clickthrough,
+    alwaysOnTop: overlay.always_on_top,
+  }
+  senderVisible.value = overlay.sender_visible
+  // 开关与尺寸分别就绪：单次尺寸读取失败不能把穿透等开关永久锁住。
+  windowReady.value = true
   try {
-    ov.value.visible = await invoke<boolean>('overlay_set_visible', { visible: v })
+    winSize.value = await invoke<{ width: number; height: number }>('overlay_get_size')
+    sizeReady.value = true
   } catch (e) {
     fail(e)
   }
 }
 
-async function setClickthrough(v: boolean) {
-  errMsg.value = ''
+async function restoreWindowSettings() {
+  if (loading || disposed) return
+  loading = true
   try {
-    ov.value.clickthrough = await invoke<boolean>('overlay_set_clickthrough', {
-      enabled: v,
-    })
+    await loadWindowSettings()
   } catch (e) {
     fail(e)
+  } finally {
+    loading = false
+    if (windowReady.value && sizeReady.value && retryTimer) {
+      clearInterval(retryTimer)
+      retryTimer = undefined
+    }
   }
 }
 
-async function setAlwaysOnTop(v: boolean) {
-  errMsg.value = ''
-  try {
-    ov.value.alwaysOnTop = await invoke<boolean>('overlay_set_always_on_top', {
-      enabled: v,
+function subscribe<T>(event: string, handle: (payload: T) => void) {
+  // 监听注册单独失败时仍要读快照；不能让一个事件阻断整个设置页初始化。
+  void listen<T>(event, e => handle(e.payload))
+    .then(unlisten => {
+      if (disposed) unlisten()
+      else unlisteners.push(unlisten)
     })
+    .catch(fail)
+}
+
+async function setWindowFlag(key: 'visible' | 'clickthrough' | 'alwaysOnTop', v: boolean) {
+  if (windowSaving.value) return
+  errMsg.value = ''
+  windowSaving.value = true
+  const previous = ov.value[key]
+  ov.value[key] = v
+  const command =
+    key === 'visible'
+      ? 'overlay_set_visible'
+      : key === 'clickthrough'
+        ? 'overlay_set_clickthrough'
+        : 'overlay_set_always_on_top'
+  try {
+    ov.value[key] = await invoke<boolean>(command, key === 'visible' ? { visible: v } : { enabled: v })
   } catch (e) {
+    await loadWindowSettings().catch(() => {
+      ov.value[key] = previous
+    })
     fail(e)
+  } finally {
+    windowSaving.value = false
+  }
+}
+
+async function setSenderVisible(v: boolean) {
+  if (senderSaving.value) return
+  errMsg.value = ''
+  senderSaving.value = true
+  const previous = senderVisible.value
+  senderVisible.value = v
+  try {
+    senderVisible.value = await invoke<boolean>('sender_set_visible', { visible: v })
+  } catch (e) {
+    // 原生窗口操作失败时回显实际状态；保存失败则保留本次已生效的窗口状态。
+    senderVisible.value = await invoke<boolean>('sender_is_visible').catch(() => previous)
+    fail(e)
+  } finally {
+    senderSaving.value = false
   }
 }
 
@@ -72,34 +133,34 @@ async function commitSize() {
   }
 }
 
-onMounted(async () => {
-  // 先在监听：读取尺寸与手动缩放都走同一条路，不必区分先后
-  unlistenSize = await listen<{ width: number; height: number }>('overlay-size', e => {
-    winSize.value = e.payload
+onMounted(() => {
+  subscribe<{ width: number; height: number }>('overlay-size', size => {
+    winSize.value = size
+    sizeReady.value = true
   })
-  unlistenVisible = await listen<boolean>('overlay-visible', e => {
-    ov.value.visible = e.payload
+  subscribe<boolean>('overlay-visible', visible => {
+    ov.value.visible = visible
   })
-  unlistenClickthrough = await listen<boolean>('overlay-clickthrough', e => {
-    ov.value.clickthrough = e.payload
+  subscribe<boolean>('overlay-clickthrough', enabled => {
+    ov.value.clickthrough = enabled
   })
-  try {
-    winSize.value = await invoke<{ width: number; height: number }>('overlay_get_size')
-  } catch (e) {
-    console.error('读取尺寸失败', e)
-  }
-  try {
-    ov.value.visible = await invoke<boolean>('overlay_is_visible')
-    ov.value.clickthrough = await invoke<boolean>('overlay_get_clickthrough')
-  } catch (e) {
-    console.error('读取弹幕窗状态失败', e)
-  }
+  subscribe<boolean>('sender-visible', visible => {
+    senderVisible.value = visible
+  })
+  subscribe<boolean>('overlay-always-on-top', enabled => {
+    ov.value.alwaysOnTop = enabled
+  })
+  subscribe('overlay-ready', () => {
+    void restoreWindowSettings()
+  })
+  retryTimer = setInterval(() => void restoreWindowSettings(), 1000)
+  void restoreWindowSettings()
 })
 
 onUnmounted(() => {
-  unlistenSize?.()
-  unlistenVisible?.()
-  unlistenClickthrough?.()
+  disposed = true
+  for (const unlisten of unlisteners) unlisten()
+  if (retryTimer) clearInterval(retryTimer)
   if (errTimer) clearTimeout(errTimer)
 })
 </script>
@@ -112,43 +173,74 @@ onUnmounted(() => {
       <input
         type="checkbox"
         class="switch"
+        aria-label="显示弹幕窗"
         :checked="ov.visible"
-        @change="setVisible(($event.target as HTMLInputElement).checked)" />
+        :disabled="!windowReady || windowSaving"
+        @change="setWindowFlag('visible', ($event.target as HTMLInputElement).checked)" />
+    </SettingRow>
+
+    <SettingRow label="显示发送框">
+      <input
+        type="checkbox"
+        class="switch"
+        aria-label="显示发送框"
+        :checked="senderVisible"
+        :disabled="!windowReady || senderSaving"
+        @change="setSenderVisible(($event.target as HTMLInputElement).checked)" />
     </SettingRow>
 
     <SettingRow label="鼠标穿透">
       <input
         type="checkbox"
         class="switch"
+        aria-label="鼠标穿透"
         :checked="ov.clickthrough"
-        @change="setClickthrough(($event.target as HTMLInputElement).checked)" />
+        :disabled="!windowReady || windowSaving"
+        @change="setWindowFlag('clickthrough', ($event.target as HTMLInputElement).checked)" />
     </SettingRow>
 
     <SettingRow label="始终置顶">
       <input
         type="checkbox"
         class="switch"
+        aria-label="始终置顶"
         :checked="ov.alwaysOnTop"
-        @change="setAlwaysOnTop(($event.target as HTMLInputElement).checked)" />
+        :disabled="!windowReady || windowSaving"
+        @change="setWindowFlag('alwaysOnTop', ($event.target as HTMLInputElement).checked)" />
     </SettingRow>
 
     <SettingRow label="宽度">
       <div class="size-control">
-        <input v-model.number="winSize.width" type="range" min="240" max="1600" step="10" @change="commitSize" />
+        <input
+          v-model.number="winSize.width"
+          type="range"
+          min="240"
+          max="1600"
+          step="10"
+          :disabled="!sizeReady"
+          @change="commitSize" />
         <span class="value">{{ winSize.width }}px</span>
       </div>
     </SettingRow>
 
     <SettingRow label="高度">
       <div class="size-control">
-        <input v-model.number="winSize.height" type="range" min="120" max="900" step="10" @change="commitSize" />
+        <input
+          v-model.number="winSize.height"
+          type="range"
+          min="120"
+          max="900"
+          step="10"
+          :disabled="!sizeReady"
+          @change="commitSize" />
         <span class="value">{{ winSize.height }}px</span>
       </div>
     </SettingRow>
 
     <p class="tip">
       关闭穿透后，可在弹幕窗上按住拖动、边缘调整大小；开启穿透后鼠标点击会落到弹幕窗下方的窗口。
-      位置和大小自动保存，下次启动恢复。
+      本页开关、窗口位置和大小自动保存，下次启动恢复。
+      关闭「显示发送框」会同时隐藏输入框和穿透按钮，重启后保持；可在此重新开启，鼠标穿透也可在此切换。
     </p>
   </div>
 </template>

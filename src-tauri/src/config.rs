@@ -142,6 +142,38 @@ pub fn save_overlay_style(app: &AppHandle, style: &OverlayStyle) -> Result<(), S
     save_config_unlocked(app, &cfg)
 }
 
+/// 保存弹幕窗显示开关
+pub fn save_overlay_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.overlay_window.visible = visible;
+    save_config_unlocked(app, &cfg)
+}
+
+/// 保存鼠标穿透开关（与其它开关分别更新，避免并发覆盖）
+pub fn save_overlay_clickthrough(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.overlay_window.clickthrough = enabled;
+    save_config_unlocked(app, &cfg)
+}
+
+/// 保存弹幕窗置顶开关
+pub fn save_overlay_always_on_top(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.overlay_window.always_on_top = enabled;
+    save_config_unlocked(app, &cfg)
+}
+
+/// 保存发送框独立显示偏好
+pub fn save_sender_visible(app: &AppHandle, visible: bool) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.sender.visible = visible;
+    save_config_unlocked(app, &cfg)
+}
+
 /// 保存 Overlay 窗口位置大小
 pub fn save_overlay_bounds(app: &AppHandle, bounds: &WindowBounds) -> Result<(), String> {
     let _g = lock_cfg();
@@ -187,6 +219,14 @@ pub fn save_welcome_config(app: &AppHandle, welcome: &WelcomeConfig) -> Result<(
     let _g = lock_cfg();
     let mut cfg = load_config_unlocked(app);
     cfg.welcome = welcome.clone();
+    save_config_unlocked(app, &cfg)
+}
+
+/// 记录认证成功的房间号（与昵称查询和最近房间列表相互独立）
+pub fn save_last_room_id(app: &AppHandle, room_id: u32) -> Result<(), String> {
+    let _g = lock_cfg();
+    let mut cfg = load_config_unlocked(app);
+    cfg.last_room_id = Some(room_id);
     save_config_unlocked(app, &cfg)
 }
 

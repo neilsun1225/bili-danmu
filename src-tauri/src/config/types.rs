@@ -78,6 +78,15 @@ pub struct WindowBounds {
     pub h: f64,
 }
 
+impl WindowBounds {
+    /// 最小化产生的零尺寸与无效坐标不能覆盖上次正常窗口位置。
+    pub fn is_valid(&self) -> bool {
+        self.x.is_finite() && self.y.is_finite()
+            && self.w.is_finite() && self.h.is_finite()
+            && self.w > 0.0 && self.h > 0.0
+    }
+}
+
 /// 弹幕过滤配置
 ///
 /// 身份规则间为「或」关系：任一开启的规则命中即显示（全部关闭 = 不过滤）；
@@ -248,6 +257,34 @@ pub struct RecentRoom {
 /// 最近房间保留条数上限
 pub const RECENT_ROOM_LIMIT: usize = 10;
 
+/// 发送框显示偏好（默认显示，兼容旧配置）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SenderConfig {
+    pub visible: bool,
+}
+
+impl Default for SenderConfig {
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
+/// 弹幕窗开关（旧配置保持原默认行为）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OverlayWindowConfig {
+    pub visible: bool,
+    pub clickthrough: bool,
+    pub always_on_top: bool,
+}
+
+impl Default for OverlayWindowConfig {
+    fn default() -> Self {
+        Self { visible: true, clickthrough: false, always_on_top: true }
+    }
+}
+
 /// 配置文件结构（后续里程碑扩展字段）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -255,10 +292,109 @@ pub struct ConfigFile {
     pub auth: Option<AuthInfo>,
     pub overlay_style: OverlayStyle,
     pub overlay_bounds: Option<WindowBounds>,
+    pub overlay_window: OverlayWindowConfig,
+    pub sender: SenderConfig,
     pub danmaku_filter: DanmakuFilter,
     pub tts: TtsConfig,
     pub gift: GiftConfig,
     pub gift_tts: GiftTtsConfig,
     pub welcome: WelcomeConfig,
     pub recent_rooms: Vec<RecentRoom>,
+    /// 最近一次 WebSocket 认证成功的真实房间号，不被失败的连接尝试覆盖。
+    pub last_room_id: Option<u32>,
+}
+
+impl ConfigFile {
+    /// 升级前没有独立记录时，沿用已有的最近房间；以后以认证成功的记录为准。
+    pub fn remembered_room_id(&self) -> Option<u32> {
+        self.last_room_id.filter(|id| *id > 0).or_else(|| {
+            self.recent_rooms.iter().find(|r| r.room_id > 0).map(|r| r.room_id)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 旧配置缺少发送框设置时保持显示并保留原有偏好() {
+        let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+            "overlay_style": { "font_size": 24.0 },
+            "tts": { "enabled": true },
+            "recent_rooms": [{ "room_id": 123, "uname": "测试主播" }]
+        })).unwrap();
+        assert!(cfg.sender.visible);
+        assert_eq!(cfg.overlay_style.font_size, 24.0);
+        assert!(cfg.tts.enabled);
+        assert_eq!(cfg.recent_rooms[0].room_id, 123);
+    }
+
+    #[test]
+    fn 隐藏发送框的偏好在配置往返后保留() {
+        let mut cfg = ConfigFile::default();
+        cfg.sender.visible = false;
+        let saved = serde_json::to_string(&cfg).unwrap();
+        let restored: ConfigFile = serde_json::from_str(&saved).unwrap();
+        assert!(!restored.sender.visible);
+    }
+
+    #[test]
+    fn 空发送框配置沿用显示默认值() {
+        let cfg: ConfigFile = serde_json::from_str(r#"{"sender":{}}"#).unwrap();
+        assert!(cfg.sender.visible);
+    }
+
+    #[test]
+    fn 旧试用配置升级保留发送框隐藏且新开关沿用原默认值() {
+        let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+            "sender": { "visible": false },
+            "overlay_style": { "font_size": 24.0 },
+            "overlay_bounds": { "x": -640.0, "y": 120.0, "w": 700.0, "h": 400.0 },
+            "recent_rooms": [{ "room_id": 22447379 }]
+        })).unwrap();
+        assert!(!cfg.sender.visible);
+        assert!(cfg.overlay_window.visible);
+        assert!(!cfg.overlay_window.clickthrough);
+        assert!(cfg.overlay_window.always_on_top);
+        assert_eq!(cfg.overlay_style.font_size, 24.0);
+        assert_eq!(cfg.overlay_bounds.unwrap().x, -640.0);
+        assert_eq!(cfg.remembered_room_id(), Some(22447379));
+    }
+
+    #[test]
+    fn 四个开关与窗口位置和上次房间在配置往返后保留() {
+        let mut cfg = ConfigFile::default();
+        cfg.sender.visible = false;
+        cfg.overlay_window = OverlayWindowConfig { visible: false, clickthrough: true, always_on_top: false };
+        cfg.overlay_bounds = Some(WindowBounds { x: 321.0, y: 234.0, w: 680.0, h: 310.0 });
+        cfg.last_room_id = Some(22447379);
+        let restored: ConfigFile = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(!restored.sender.visible);
+        assert!(!restored.overlay_window.visible);
+        assert!(restored.overlay_window.clickthrough);
+        assert!(!restored.overlay_window.always_on_top);
+        assert_eq!(restored.overlay_bounds, cfg.overlay_bounds);
+        assert_eq!(restored.remembered_room_id(), Some(22447379));
+    }
+
+    #[test]
+    fn 最近房间昵称查询晚到不能覆盖上次成功连接的房间() {
+        let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+            "last_room_id": 22447379,
+            "recent_rooms": [{ "room_id": 987654, "uname": "较早的房间" }]
+        })).unwrap();
+        assert_eq!(cfg.remembered_room_id(), Some(22447379));
+        assert_eq!(ConfigFile::default().remembered_room_id(), None);
+    }
+
+    #[test]
+    fn 窗口位置允许副屏负坐标但拒绝最小化尺寸与非法数字() {
+        let normal = WindowBounds { x: -500.0, y: -100.0, w: 680.0, h: 310.0 };
+        assert!(normal.is_valid());
+        assert!(!WindowBounds { w: 0.0, ..normal }.is_valid());
+        assert!(!WindowBounds { h: -1.0, ..normal }.is_valid());
+        assert!(!WindowBounds { x: f64::NAN, ..normal }.is_valid());
+        assert!(!WindowBounds { w: f64::INFINITY, ..normal }.is_valid());
+    }
 }

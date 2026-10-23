@@ -9,7 +9,8 @@ import { useRoomConnection } from '../composables/useRoomConnection'
 onMounted(refreshLogin)
 
 const { loggedIn, uid, uname, openLoginDialog, logout } = useLogin()
-const { roomId, busy, status, errorMsg, recentRooms, locked, statusText, connect, disconnect } = useRoomConnection()
+const { roomId, busy, status, errorMsg, recentRooms, locked, statusText, connect, disconnect, markRoomEdited } =
+  useRoomConnection()
 
 // 最近连接的直播间面包屑：暂时隐藏（只隐藏 UI，数据与代码保留，改 true 即恢复）
 const SHOW_RECENT_ROOMS = false
@@ -48,6 +49,7 @@ async function handleLogout() {
         class="room-input"
         type="number"
         placeholder="输入直播间 ID，如 22312451"
+        @input="markRoomEdited"
         :disabled="locked" />
       <button v-if="status.state === 'connected'" class="btn danger" :disabled="busy" @click="disconnect">断开</button>
       <button v-else class="btn primary" :disabled="busy || status.state === 'connecting'" @click="connect()">

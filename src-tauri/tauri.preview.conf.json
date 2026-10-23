@@ -1,0 +1,12 @@
+{
+  "productName": "bili-danmu 发送框试用",
+  "identifier": "com.neilsun1225.bilidanmu.sender-preview",
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}
