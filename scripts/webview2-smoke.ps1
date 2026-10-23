@@ -215,7 +215,12 @@ try {
   $underlay=Get-Content -LiteralPath (Join-Path $OutputDir 'background-ready.json') -Raw | ConvertFrom-Json
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$Port --remote-allow-origins=*"
   $env:WEBVIEW2_USER_DATA_FOLDER=Join-Path $scratch 'webview2-data'
-  $appProcess=[Diagnostics.Process]::Start($ExePath)
+  $appInfo=[Diagnostics.ProcessStartInfo]::new()
+  $appInfo.FileName=$ExePath
+  $appInfo.UseShellExecute=$false
+  $appInfo.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS']=$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+  $appInfo.Environment['WEBVIEW2_USER_DATA_FOLDER']=$env:WEBVIEW2_USER_DATA_FOLDER
+  $appProcess=[Diagnostics.Process]::Start($appInfo)
   $nodeProcess=Start-Child (Get-Command node.exe).Source @($nodeScript,'--output',$OutputDir,'--prefix',$dependencyPrefix,'--port',[string]$Port,'--timeout','150000') 'node'
   $deadline=[DateTime]::UtcNow.AddSeconds(100)
   while (-not (Test-Path -LiteralPath (Join-Path $OutputDir 'phase-before.json'))) {
@@ -273,6 +278,19 @@ try {
 } finally {
   # CDP 或界面初始化失败时也记录仍存在的窗口，不得用模拟结果替代。
   if ($appProcess -and -not $appProcess.HasExited) {
+    # 仅记录本次应用的进程树参数，诊断 WebView2 是否继承了调试端口；不导出环境变量或浏览器数据。
+    try {
+      $processes=@(Get-CimInstance Win32_Process)
+      $owned=[Collections.Generic.HashSet[uint32]]::new()
+      $owned.Add([uint32]$appProcess.Id) | Out-Null
+      do {
+        $changed=$false
+        foreach ($process in $processes) {
+          if ($owned.Contains([uint32]$process.ParentProcessId) -and $owned.Add([uint32]$process.ProcessId)) { $changed=$true }
+        }
+      } while ($changed)
+      Write-Json 'app-processes.json' @($processes | Where-Object {$owned.Contains([uint32]$_.ProcessId)} | Select-Object ProcessId,ParentProcessId,Name,CommandLine)
+    } catch { $failures.Add('Collecting process arguments failed: '+$_.Exception.Message) }
     Write-Json 'final-native-windows.json' @([SmokeNative]::Windows([uint32]$appProcess.Id))
     try { Capture-Desktop 'final-desktop.png' } catch { $failures.Add('Final desktop screenshot failed: ' + $_.Exception.Message) }
   }
