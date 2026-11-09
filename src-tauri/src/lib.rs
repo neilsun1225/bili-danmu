@@ -136,6 +136,13 @@ pub fn run() {
             .skip_taskbar(true)
             .shadow(false);
             if let Ok(win) = win_builder.build() {
+                // Tao 创建窗口时会丢弃左上角不在显示器内的位置；窗口部分越界仍是有效布局。
+                // 创建后、显示前再设置一次，保留这类已保存坐标。
+                if let Err(e) = win.set_position(tauri::LogicalPosition::new(initial_bounds.x, initial_bounds.y)) {
+                    log::warn!("[overlay] 恢复窗口位置失败: {e}");
+                }
+                log::info!("[overlay] 恢复窗口位置: x={} y={} w={} h={}",
+                    initial_bounds.x, initial_bounds.y, initial_bounds.w, initial_bounds.h);
                 // 先恢复穿透再显示，避免启动时短暂拦住游戏鼠标。
                 if let Err(e) = win.set_ignore_cursor_events(cfg.overlay_window.clickthrough) {
                     log::error!("[overlay] 恢复鼠标穿透失败: {e}");

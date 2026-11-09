@@ -74,6 +74,8 @@ fn persist_overlay_bounds(
     if *saved != Some(bounds) {
         save(&bounds)?;
         *saved = Some(bounds);
+        log::info!("[overlay] 已保存窗口位置: x={} y={} w={} h={}",
+            bounds.x, bounds.y, bounds.w, bounds.h);
     }
     Ok(())
 }
