@@ -138,8 +138,22 @@ pub fn run() {
             if let Ok(win) = win_builder.build() {
                 // Tao 创建窗口时会丢弃左上角不在显示器内的位置；窗口部分越界仍是有效布局。
                 // 创建后、显示前再设置一次，保留这类已保存坐标。
-                if let Err(e) = win.set_position(tauri::LogicalPosition::new(initial_bounds.x, initial_bounds.y)) {
-                    log::warn!("[overlay] 恢复窗口位置失败: {e}");
+                let scale = win.scale_factor().unwrap_or(1.0);
+                let has_visible_area = win.available_monitors().map(|monitors| monitors.iter().any(|monitor| {
+                    let p = monitor.position();
+                    let s = monitor.size();
+                    initial_bounds.x * scale < p.x as f64 + s.width as f64
+                        && (initial_bounds.x + initial_bounds.w) * scale > p.x as f64
+                        && initial_bounds.y * scale < p.y as f64 + s.height as f64
+                        && (initial_bounds.y + initial_bounds.h) * scale > p.y as f64
+                })).unwrap_or(false);
+                // 显示器移除后整个窗口都在屏幕外时，保留创建器的可见回退位置。
+                if has_visible_area {
+                    if let Err(e) = win.set_position(tauri::LogicalPosition::new(initial_bounds.x, initial_bounds.y)) {
+                        log::warn!("[overlay] 恢复窗口位置失败: {e}");
+                    }
+                } else {
+                    log::info!("[overlay] 保存的位置无可见区域，使用系统回退位置");
                 }
                 log::info!("[overlay] 恢复窗口位置: x={} y={} w={} h={}",
                     initial_bounds.x, initial_bounds.y, initial_bounds.w, initial_bounds.h);

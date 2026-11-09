@@ -410,6 +410,19 @@ try {
   Stop-OwnedApp
   $appProcess=Start-PositionApp $movedExe $movedDirectory
   Verify-RestoredPosition 'relocated-exe-second-restore' $movedExe $movedDirectory $secondX $secondY $positionConfig
+  # 完全离开所有屏幕的旧布局不能让窗口消失，仍应回退到可见位置。
+  $offscreenX=$left+[SmokeNative]::GetSystemMetrics(78)+100
+  Move-AndVerifySaved 'fully-offscreen-save' $movedExe $movedDirectory $offscreenX $firstY $positionConfig | Out-Null
+  Stop-OwnedApp
+  $appProcess=Start-PositionApp $movedExe $movedDirectory
+  $restored=Get-OverlayWindow
+  Start-Sleep -Milliseconds 1000
+  $restored=[SmokeNative]::Describe([IntPtr]$restored.Hwnd)
+  Record-PositionStage 'fully-offscreen-visible-fallback' $movedExe $movedDirectory $restored (Read-CiOverlayBounds $positionConfig) @{behavior='intersects desktop'}
+  if ($restored.Bounds.Left -ge $left+[SmokeNative]::GetSystemMetrics(78) -or $restored.Bounds.Right -le $left -or
+      $restored.Bounds.Top -ge $top+[SmokeNative]::GetSystemMetrics(79) -or $restored.Bounds.Bottom -le $top) {
+    throw 'The fully offscreen saved layout was restored outside the visible desktop.'
+  }
   $positionPassed=$true
 } catch {
   $positionError=$_.Exception.Message
