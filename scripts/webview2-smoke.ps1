@@ -43,6 +43,7 @@ public static class SmokeNative {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll", SetLastError=true)] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
   [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
   [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
   [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
@@ -120,6 +121,13 @@ $backgroundProcess = $null
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('bili-webview2-smoke-' + [Guid]::NewGuid().ToString('N'))
 $failures = [Collections.Generic.List[string]]::new()
 $phases = [Collections.Generic.List[object]]::new()
+$ownedApps = [Collections.Generic.List[Diagnostics.Process]]::new()
+$positionStages = [Collections.Generic.List[object]]::new()
+$positionPassed = $false
+$positionError = $null
+$ciConfigPaths = @('com.bilidanmu.app','com.neilsun1225.bilidanmu.sender-preview') | ForEach-Object {
+  Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)) ($_ + '\config.json')
+}
 $oldArguments = $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 $oldUserData = $env:WEBVIEW2_USER_DATA_FOLDER
 $debugPolicy = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments'
@@ -145,6 +153,97 @@ function Save-ChildLogs($Child) {
   if ($Child -and $Child.Process.HasExited) {
     $Child.Stdout.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $OutputDir ($Child.Prefix + '.stdout.log')) -Encoding utf8
     $Child.Stderr.GetAwaiter().GetResult() | Set-Content -LiteralPath (Join-Path $OutputDir ($Child.Prefix + '.stderr.log')) -Encoding utf8
+  }
+}
+
+function Get-OverlayWindow {
+  $deadline=[DateTime]::UtcNow.AddSeconds(20)
+  do {
+    if ($appProcess.HasExited) { throw 'The owned application exited before its Overlay HWND appeared.' }
+    $overlayWindow=@([SmokeNative]::Windows([uint32]$appProcess.Id)) | Where-Object {
+      $_.Title -eq 'bili-danmu overlay' -and $_.RootHwnd -eq $_.Hwnd
+    } | Select-Object -First 1
+    if ($overlayWindow -and $overlayWindow.Visible) { return $overlayWindow }
+    Start-Sleep -Milliseconds 150
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw 'The actual visible Overlay HWND did not appear after restart.'
+}
+
+function Read-CiOverlayBounds([string]$ConfigPath) {
+  # 启动前已确认这些路径不存在；只抽取位置与尺寸，不导出原始配置。
+  $stream=[IO.File]::OpenRead($ConfigPath)
+  $document=$null
+  try {
+    $document=[Text.Json.JsonDocument]::Parse($stream)
+    $bounds=$document.RootElement.GetProperty('overlay_bounds')
+    return @{x=$bounds.GetProperty('x').GetDouble();y=$bounds.GetProperty('y').GetDouble();w=$bounds.GetProperty('w').GetDouble();h=$bounds.GetProperty('h').GetDouble()}
+  } finally { if ($document) { $document.Dispose() }; $stream.Dispose() }
+}
+
+function Record-PositionStage([string]$Name, [string]$File, [string]$WorkingDirectory, $Window, $Saved, $Expected) {
+  $positionStages.Add(@{stage=$Name;utc=[DateTime]::UtcNow.ToString('o');executable=$File;workingDirectory=$WorkingDirectory;
+    sha256=(Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash;pid=$appProcess.Id;hwnd=$Window.Hwnd;dpi=$Window.Dpi;
+    actualPhysical=$Window.Bounds;savedOverlayBounds=$Saved;expectedPhysical=$Expected})
+  Write-Json 'position-persistence.json' @{kind='actual-Windows-Overlay-persistence';passed=$false;stages=$positionStages.ToArray()}
+}
+
+function Move-AndVerifySaved([string]$Stage, [string]$File, [string]$WorkingDirectory, [int]$X, [int]$Y, [string]$ConfigPath) {
+  $overlayWindow=Get-OverlayWindow
+  # SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE：触发真实移动事件，不改变焦点或尺寸。
+  if (-not [SmokeNative]::SetWindowPos([IntPtr]$overlayWindow.Hwnd,[IntPtr]::Zero,$X,$Y,0,0,0x0015)) {
+    throw ('Moving the actual Overlay failed: ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error())
+  }
+  Start-Sleep -Milliseconds 250
+  $overlayWindow=[SmokeNative]::Describe([IntPtr]$overlayWindow.Hwnd)
+  $expected=@{x=$X;y=$Y}
+  if ([Math]::Abs($overlayWindow.Bounds.Left-$X) -gt 1 -or [Math]::Abs($overlayWindow.Bounds.Top-$Y) -gt 1) {
+    Record-PositionStage ($Stage+'-move-failed') $File $WorkingDirectory $overlayWindow $null $expected
+    throw 'Windows did not move the Overlay to the requested non-default coordinates.'
+  }
+  $scale=[double]$overlayWindow.Dpi/96.0
+  if ($scale -le 0) { throw 'The actual Overlay DPI is unavailable.' }
+  # 等待超过应用的两秒保存周期，检查磁盘中的实际坐标。
+  Start-Sleep -Milliseconds 3200
+  $deadline=[DateTime]::UtcNow.AddSeconds(6)
+  $saved=$null
+  do {
+    try { $saved=Read-CiOverlayBounds $ConfigPath } catch { $saved=$null }
+    if ($saved -and [Math]::Abs($saved.x-$X/$scale) -le 0.75 -and [Math]::Abs($saved.y-$Y/$scale) -le 0.75) {
+      Record-PositionStage $Stage $File $WorkingDirectory $overlayWindow $saved $expected
+      return $saved
+    }
+    Start-Sleep -Milliseconds 200
+  } while ([DateTime]::UtcNow -lt $deadline)
+  Record-PositionStage ($Stage+'-save-failed') $File $WorkingDirectory $overlayWindow $saved $expected
+  throw "Actual Overlay coordinates were not persisted after the periodic save: $Stage"
+}
+
+function Stop-OwnedApp {
+  if ($appProcess -and -not $appProcess.HasExited) {
+    & taskkill.exe /PID $appProcess.Id /T /F *> $null
+    if (-not $appProcess.WaitForExit(10000)) { throw 'The owned application did not stop before the restart check.' }
+    Start-Sleep -Milliseconds 300
+  }
+}
+
+function Start-PositionApp([string]$File, [string]$WorkingDirectory) {
+  $info=[Diagnostics.ProcessStartInfo]::new()
+  $info.FileName=$File; $info.WorkingDirectory=$WorkingDirectory; $info.UseShellExecute=$false
+  $info.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS']=$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+  $info.Environment['WEBVIEW2_USER_DATA_FOLDER']=$env:WEBVIEW2_USER_DATA_FOLDER
+  $started=[Diagnostics.Process]::Start($info)
+  $ownedApps.Add($started)
+  return $started
+}
+
+function Verify-RestoredPosition([string]$Stage, [string]$File, [string]$WorkingDirectory, [int]$X, [int]$Y, [string]$ConfigPath) {
+  $overlayWindow=Get-OverlayWindow
+  Start-Sleep -Milliseconds 1000
+  $overlayWindow=[SmokeNative]::Describe([IntPtr]$overlayWindow.Hwnd)
+  $saved=Read-CiOverlayBounds $ConfigPath
+  Record-PositionStage $Stage $File $WorkingDirectory $overlayWindow $saved @{x=$X;y=$Y}
+  if ([Math]::Abs($overlayWindow.Bounds.Left-$X) -gt 1 -or [Math]::Abs($overlayWindow.Bounds.Top-$Y) -gt 1) {
+    throw "The real Overlay did not restore its saved physical coordinates: $Stage"
   }
 }
 
@@ -198,8 +297,8 @@ function Capture-Native([string]$Phase, $Geometry, [long]$UnderlayHwnd) {
 try {
   # GHA 的新账户不应包含正式版或试用版的已有配置。
   # 不读取、复制或删除已有 config.json，尤其不能访问登录 Cookie。
-  foreach ($identifier in @('com.bilidanmu.app','com.neilsun1225.bilidanmu.sender-preview')) {
-    if (Test-Path -LiteralPath (Join-Path $env:APPDATA ($identifier + '\config.json'))) { throw "Existing application configuration detected for $identifier; refusing an unisolated run." }
+  foreach ($configPath in $ciConfigPaths) {
+    if (Test-Path -LiteralPath $configPath) { throw 'Existing application configuration detected; refusing an unisolated run.' }
   }
   if (Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($ExePath)) -ErrorAction SilentlyContinue) { throw 'An application process already exists; refusing to share its state.' }
   if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) { throw "Debug port $Port is already occupied." }
@@ -227,10 +326,12 @@ try {
   $debugPolicyCreated=$true
   $appInfo=[Diagnostics.ProcessStartInfo]::new()
   $appInfo.FileName=$ExePath
+  $appInfo.WorkingDirectory=Split-Path -Parent $ExePath
   $appInfo.UseShellExecute=$false
   $appInfo.Environment['WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS']=$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
   $appInfo.Environment['WEBVIEW2_USER_DATA_FOLDER']=$env:WEBVIEW2_USER_DATA_FOLDER
   $appProcess=[Diagnostics.Process]::Start($appInfo)
+  $ownedApps.Add($appProcess)
   $nodeProcess=Start-Child (Get-Command node.exe).Source @($nodeScript,'--output',$OutputDir,'--prefix',$dependencyPrefix,'--port',[string]$Port,'--timeout','150000') 'node'
   $deadline=[DateTime]::UtcNow.AddSeconds(100)
   while (-not (Test-Path -LiteralPath (Join-Path $OutputDir 'phase-before.json'))) {
@@ -285,7 +386,33 @@ try {
   'native capture complete' | Set-Content -LiteralPath (Join-Path $OutputDir 'native-after.done') -Encoding utf8
   if (-not $nodeProcess.Process.WaitForExit(40000)) { throw 'The CDP inspector did not finish after the native click.' }
   if ($nodeProcess.Process.ExitCode -ne 0) { $failures.Add('Actual WebView2/CDP assertions failed; inspect webview2-result.json.') }
+
+  # 使用同一编译标识与 CI 账户检查周期保存、移目录及重启，路径中包含中文和空格。
+  $createdConfigs=@($ciConfigPaths | Where-Object { Test-Path -LiteralPath $_ })
+  if ($createdConfigs.Count -ne 1) { throw 'Expected exactly one newly created CI application config for the persistence check.' }
+  $positionConfig=$createdConfigs[0]
+  $originalCwd=Split-Path -Parent $ExePath
+  $left=[SmokeNative]::GetSystemMetrics(76); $top=[SmokeNative]::GetSystemMetrics(77)
+  # 第二个位置部分越过屏幕左边缘，窗口主体仍可见，不能在启动时被丢弃。
+  $firstX=$left+173; $firstY=$top+137; $secondX=$left-40; $secondY=$top+139
+  Move-AndVerifySaved 'original-location-periodic-save' $ExePath $originalCwd $firstX $firstY $positionConfig | Out-Null
+  Stop-OwnedApp
+  $movedDirectory=Join-Path $scratch '移动测试 new folder'
+  [IO.Directory]::CreateDirectory($movedDirectory) | Out-Null
+  $movedExe=Join-Path $movedDirectory ([IO.Path]::GetFileName($ExePath))
+  Copy-Item -LiteralPath $ExePath -Destination $movedExe
+  if ((Get-FileHash -LiteralPath $movedExe -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $ExePath -Algorithm SHA256).Hash) {
+    throw 'The relocated executable hash changed; refusing to compare different application builds.'
+  }
+  $appProcess=Start-PositionApp $movedExe $movedDirectory
+  Verify-RestoredPosition 'relocated-exe-first-restore' $movedExe $movedDirectory $firstX $firstY $positionConfig
+  Move-AndVerifySaved 'relocated-exe-second-save' $movedExe $movedDirectory $secondX $secondY $positionConfig | Out-Null
+  Stop-OwnedApp
+  $appProcess=Start-PositionApp $movedExe $movedDirectory
+  Verify-RestoredPosition 'relocated-exe-second-restore' $movedExe $movedDirectory $secondX $secondY $positionConfig
+  $positionPassed=$true
 } catch {
+  $positionError=$_.Exception.Message
   $failures.Add($_.Exception.ToString())
   $_ | Out-String | Set-Content -LiteralPath (Join-Path $OutputDir 'launcher-error.log') -Encoding utf8
 } finally {
@@ -312,9 +439,13 @@ try {
     Save-ChildLogs $child
   }
   if ($appProcess -and -not $appProcess.HasExited) { & taskkill.exe /PID $appProcess.Id /T /F *> $null }
+  foreach ($ownedApp in $ownedApps) {
+    if (-not $ownedApp.HasExited) { & taskkill.exe /PID $ownedApp.Id /T /F *> $null }
+  }
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=$oldArguments
   $env:WEBVIEW2_USER_DATA_FOLDER=$oldUserData
   if ($debugPolicyCreated) { Remove-ItemProperty -LiteralPath $debugPolicy -Name $debugPolicyName -ErrorAction SilentlyContinue }
+  Write-Json 'position-persistence.json' @{kind='actual-Windows-Overlay-persistence';passed=$positionPassed;error=$positionError;stages=$positionStages.ToArray();termination='Owned processes are stopped only after verifying the periodic disk save; this does not test the tray exit callback.'}
   Write-Json 'native-result.json' @{kind='actual-release-webview2';startedAt=$startTime.ToString('o');finishedAt=[DateTime]::UtcNow.ToString('o');passed=($failures.Count -eq 0);errors=$failures.ToArray();phases=$phases.ToArray();validationLimit='CI Windows desktop with real WebView2; physical game and OBS acceptance remain separate.'}
   # 浏览器数据和临时依赖不在产物目录内，绝不复制到交付包。
   if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue }
