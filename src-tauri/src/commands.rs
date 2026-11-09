@@ -7,7 +7,7 @@ use crate::bilibili;
 use crate::config;
 use crate::state::{prune_ticks, AppState, OverlayState, RoomStatus};
 use crate::tts;
-use crate::window::{overlay_window, sync_sender_docked};
+use crate::window::{overlay_window, sender_window, sync_sender_docked};
 use serde_json::json;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -35,6 +35,7 @@ pub(crate) fn overlay_set_visible(
     }
     *state.visible.lock().unwrap() = visible;
     let _ = app.emit("overlay-visible", visible);
+    config::save_overlay_visible(&app, visible)?;
     Ok(visible)
 }
 
@@ -51,6 +52,7 @@ pub(crate) fn overlay_set_clickthrough(
     *state.clickthrough.lock().unwrap() = enabled;
     // 广播：穿透开关有两个入口（主界面「弹幕窗」标签、发送框右端按钮），另一侧要跟着更新
     let _ = app.emit("overlay-clickthrough", enabled);
+    config::save_overlay_clickthrough(&app, enabled)?;
     Ok(enabled)
 }
 
@@ -66,6 +68,32 @@ pub(crate) fn overlay_is_visible(state: State<'_, OverlayState>) -> bool {
     *state.visible.lock().unwrap()
 }
 
+/// 查询发送框显示偏好（独立于弹幕窗与鼠标穿透）
+#[tauri::command]
+pub(crate) fn sender_is_visible(state: State<'_, OverlayState>) -> bool {
+    *state.sender_visible.lock().unwrap()
+}
+
+/// 显示 / 隐藏整个发送框窗口，并记住偏好
+#[tauri::command]
+pub(crate) fn sender_set_visible(
+    app: AppHandle,
+    state: State<'_, OverlayState>,
+    visible: bool,
+) -> Result<bool, String> {
+    let win = sender_window(&app).ok_or("发送框窗口未创建")?;
+    if visible {
+        sync_sender_docked(&app);
+        win.show().map_err(|e| format!("显示发送框失败: {e}"))?;
+    } else {
+        win.hide().map_err(|e| format!("隐藏发送框失败: {e}"))?;
+    }
+    *state.sender_visible.lock().unwrap() = visible;
+    let _ = app.emit("sender-visible", visible);
+    config::save_sender_visible(&app, visible)?;
+    Ok(visible)
+}
+
 /// 开关始终置顶
 #[tauri::command]
 pub(crate) fn overlay_set_always_on_top(
@@ -77,6 +105,8 @@ pub(crate) fn overlay_set_always_on_top(
     win.set_always_on_top(enabled)
         .map_err(|e| format!("设置置顶失败: {e}"))?;
     *state.always_on_top.lock().unwrap() = enabled;
+    let _ = app.emit("overlay-always-on-top", enabled);
+    config::save_overlay_always_on_top(&app, enabled)?;
     Ok(enabled)
 }
 
@@ -86,7 +116,9 @@ pub(crate) fn get_dashboard_status(app: AppHandle) -> serde_json::Value {
     let overlay = {
         let st = app.state::<OverlayState>();
         json!({
+            "ready": *st.ready.lock().unwrap(),
             "visible": *st.visible.lock().unwrap(),
+            "sender_visible": *st.sender_visible.lock().unwrap(),
             "clickthrough": *st.clickthrough.lock().unwrap(),
             "always_on_top": *st.always_on_top.lock().unwrap(),
         })
@@ -383,6 +415,12 @@ pub(crate) async fn list_following_live(
 #[tauri::command]
 pub(crate) fn get_recent_rooms(app: AppHandle) -> Vec<config::RecentRoom> {
     config::load_config(&app).recent_rooms
+}
+
+/// 启动时填回上次成功连接的房间号，不自动连接。
+#[tauri::command]
+pub(crate) fn get_last_room_id(app: AppHandle) -> Option<u32> {
+    config::load_config(&app).remembered_room_id()
 }
 
 /// 读取 TTS 朗读配置

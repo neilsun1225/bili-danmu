@@ -91,10 +91,10 @@ async fn connect_once(
             msg = ws.next() => {
                 match msg {
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(data))) => {
-                        handle_frame(app, room_id, &data).map_err(|e| format!("帧解析失败: {e}"))?;
+                        handle_frame(app, room_id, &cancel, &data).map_err(|e| format!("帧解析失败: {e}"))?;
                     }
                     Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
-                        handle_frame(app, room_id, text.as_bytes())
+                        handle_frame(app, room_id, &cancel, text.as_bytes())
                             .map_err(|e| format!("帧解析失败: {e}"))?;
                     }
                     Some(Ok(_)) => { /* Ping/Pong/Close 忽略 */ }
@@ -107,7 +107,12 @@ async fn connect_once(
 }
 
 /// 处理一帧网络数据：拆包 → 展开(解压) → 解析 → 上报
-fn handle_frame(app: &tauri::AppHandle, room_id: u32, data: &[u8]) -> Result<(), String> {
+fn handle_frame(
+    app: &tauri::AppHandle,
+    room_id: u32,
+    cancel: &CancellationToken,
+    data: &[u8],
+) -> Result<(), String> {
     let packets = protocol::decode_stream(data)?;
     for p in packets {
         match p.op {
@@ -121,13 +126,7 @@ fn handle_frame(app: &tauri::AppHandle, room_id: u32, data: &[u8]) -> Result<(),
                     return Err(format!("B 站认证失败 code={code}"));
                 }
                 // 同步内部状态机（供 get_connection_status / 轮询查询真实状态）
-                crate::state::on_room_connected(app, room_id);
-                log::info!("[bilibili] 房间 {room_id} 认证成功，弹幕会话已建立");
-                // 认证成功：同步状态给前端
-                let _ = app.emit(
-                    "room-status",
-                    serde_json::json!({ "state": "connected", "roomId": room_id }),
-                );
+                crate::state::on_room_connected(app, room_id, cancel);
             }
             OP_HEARTBEAT => { /* 心跳包忽略 */ }
             OP_MESSAGE => {

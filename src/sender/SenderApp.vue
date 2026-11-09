@@ -20,7 +20,6 @@ let unlistenStyle: UnlistenFn | undefined
 // 穿透从主界面那一侧被改动时由 Rust 广播过来（两个入口必须双向同步）
 let unlistenClickthrough: UnlistenFn | undefined
 let pollTimer: ReturnType<typeof setInterval> | undefined
-
 const canSend = computed(() => loggedIn.value && connected.value)
 
 async function sendDanmaku() {
@@ -38,7 +37,7 @@ async function sendDanmaku() {
   }
 }
 
-/** 切换鼠标穿透（穿透开启后本按钮是唯一能关掉它的入口） */
+/** 切换鼠标穿透（发送框隐藏后可在主窗口「弹幕窗」设置中切换） */
 async function toggleClickthrough() {
   try {
     clickthrough.value = await invoke<boolean>('overlay_set_clickthrough', { enabled: !clickthrough.value })
@@ -101,22 +100,24 @@ onUnmounted(() => {
       <input
         v-model="danmakuText"
         class="send-input"
+        :class="{ 'has-error': sendError }"
         type="text"
-        placeholder="输入弹幕回车发送"
+        aria-label="发送弹幕"
+        :aria-invalid="Boolean(sendError)"
+        :title="sendError || '输入弹幕后按回车发送'"
+        :placeholder="sendError || '输入弹幕回车发送'"
         maxlength="100"
         :disabled="!canSend"
+        @input="sendError = ''"
         @keyup.enter="sendDanmaku" />
       <button
         type="button"
         class="ct-btn"
         :class="{ on: clickthrough }"
-        :title="clickthrough ? '鼠标穿透：开（点击关闭）' : '鼠标穿透：关（点击开启）'"
+        :title="sendError || (clickthrough ? '鼠标穿透：开（点击关闭）' : '鼠标穿透：关（点击开启）')"
         @click="toggleClickthrough">
         穿透
       </button>
-    </div>
-    <div v-if="sendError" class="status-line">
-      <span class="err">{{ sendError }}</span>
     </div>
   </div>
 </template>
@@ -124,18 +125,19 @@ onUnmounted(() => {
 <style scoped>
 .sender-root {
   display: flex;
-  flex-direction: column;
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
-  padding: 0.25em 0;
 }
 
 .input-row {
   display: flex;
+  width: 100%;
+  height: 100%;
   /* stretch 而非 center：两个子元素天然等高（字号/padding 一致），stretch 再上一层保险 */
   align-items: stretch;
-  gap: 0.25em;
+  /* 两个控件相邻铺满整个原生窗口，避免透明间距成为鼠标死区。 */
+  gap: 0;
 }
 
 /* 输入区字号比弹幕小一档（0.9em）：发送框宽度受「不能挡太多游戏画面」约束
@@ -148,10 +150,11 @@ onUnmounted(() => {
   -webkit-appearance: none;
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 0.4em;
+  border-radius: 0;
   color: #fff;
   padding: 0.3em;
   font-size: 0.9em;
+  line-height: 1.2;
   outline: none;
   user-select: text;
 }
@@ -162,10 +165,14 @@ onUnmounted(() => {
 
 .send-input:focus {
   border-color: rgba(120, 180, 255, 0.95);
-  border-radius: 0.4em;
+  border-radius: 0;
 }
 
-/* 穿透开关：发送框是独立窗口，穿透开启后本按钮仍可点击，是「关掉穿透」的唯一入口。
+.send-input.has-error {
+  border-color: #ff7b72;
+}
+
+/* 穿透开关：发送框是独立窗口，穿透开启后本按钮仍可点击；主窗口也保留穿透开关。
    字号 / 上下 padding 与 .send-input 保持一致：em 是相对自身字号的，字号小一档
    行高框与 padding 会跟着缩，按钮就比输入框矮（0.8em 时矮 3.5px，看着不齐）。 */
 .ct-btn {
@@ -175,11 +182,12 @@ onUnmounted(() => {
   cursor: pointer;
   white-space: nowrap;
   font-size: 0.9em;
+  line-height: 1.2;
   font-family: inherit;
   color: rgba(255, 255, 255, 0.85);
   background: rgba(0, 0, 0, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 0.4em;
+  border-radius: 0;
   padding: 0.3em 0.45em;
   transition:
     background 0.12s ease,
@@ -195,23 +203,5 @@ onUnmounted(() => {
   color: #fff;
   background: rgba(120, 180, 255, 0.55);
   border-color: rgba(120, 180, 255, 0.95);
-}
-
-.status-line {
-  padding: 0.15em 0.15em 0;
-  font-size: 0.75em;
-  flex-shrink: 0;
-  min-height: 1.2em;
-  color: rgba(255, 255, 255, 0.85);
-  text-shadow:
-    0 0 2px rgba(0, 0, 0, 0.9),
-    0 0 2px rgba(0, 0, 0, 0.9);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.err {
-  color: #ff7b72;
 }
 </style>

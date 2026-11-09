@@ -38,12 +38,15 @@ pub(crate) async fn connect_room(
 /// 断开连接
 #[tauri::command]
 pub(crate) fn disconnect_room(app: AppHandle, state: State<'_, AppState>) {
-    *state.status.lock().unwrap() = RoomStatus::Disconnected;
+    {
+        let mut current = state.cancel.lock().unwrap();
+        if let Some(token) = current.take() {
+            token.cancel();
+        }
+        *state.status.lock().unwrap() = RoomStatus::Disconnected;
+    }
     clear_danmaku_ticks(&app);
     gift::clear(&app);
-    if let Some(token) = state.cancel.lock().unwrap().take() {
-        token.cancel();
-    }
     let _ = app.emit("room-status", json!({ "state": "disconnected" }));
 }
 
